@@ -16,6 +16,7 @@ rdkit = {version = "^2024.09", optional = true}
 pgvector = "^0.3.1"
 ijson = "^3.4.0"
 tqdm = "^4.67.1"
+pandas = "^2.3.3"
 
 [tool.poetry.extras]
 chem = ["rdkit"]

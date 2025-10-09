@@ -38,13 +38,21 @@
     bionexus upgrade head
     ```
 
-6) Load NPAtlas file (CSV/TSV/JSONL accepted; autodetecs headers):
+6) Load NPAtlas:
 
     ```bash
     bionexus load-npatlas
     ```
 
 7) (Optional) Compute fingerprints (requires RDKit):
+
+    Make sure to have installed the `chem` extras:
+
+    ```bash
+    poetry install --extras chem
+    ```
+
+    Then run:
 
     ```bash
     bionexus compute-fp
@@ -58,7 +66,23 @@
 
 Adminer: http://localhost:8080 (server: db, user: bionexus, db: bionexus)
 
-## Notes
-* The NPAtlas loader is header-flexible. It tries common key names (e.g., `npa_id`, `smiles`, `inchikey`). Update `HEADER_MAP` if export differs.
-* Dedupe key defaults to `inchikey`; switch to `ext_id` or `name` if needed.
-* `pgvector` is enabled for `compound.fp`. Heavy chemistry remains in Python.
+## Compound search
+
+Make sure to have installed the `chem` extras:
+
+```bash
+poetry install --extras chem
+```
+
+Exact search:
+
+```bash
+bionexus search-jaccard --smiles "CCO" --top-k 5
+```
+
+Exact search returns `top-k` results with lowest Jaccard distance (highest similarity). Hybrid search speeds up the process by using the `pgvector` extensions and the `<#>` operator (inner-product distance) to quickly find the 2000 nearest neighbors and then re-ranks these using the exact Jaccard distance.
+
+Hybrid search:
+```bash
+bionexus search-jaccard --smiles "CCO" --top-k 5 --hybrid   
+```

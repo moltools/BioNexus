@@ -1,6 +1,7 @@
 from __future__ import annotations
 from re import sub
 import os, sys, argparse, subprocess
+import pandas as pd
 from rich.console import Console
 from bionexus.config import DEFAULT_NPATLAS_URL
 from bionexus.utils.logging import setup_logging
@@ -76,6 +77,27 @@ def cmd_restore_db(args: argparse.Namespace) -> None:
     ]
     sys.exit(subprocess.call(cmd))
 
+def cmd_search_jaccard(args):
+    from bionexus.etl.chemistry import _morgan_bits_and_vec
+    from bionexus.db.search import jaccard_search_exact, jaccard_search_hybrid
+
+    bits, _pop, vec = _morgan_bits_and_vec(args.smiles)
+    if not bits:
+        print("Invalid SMILES")
+        return
+
+    rows = jaccard_search_hybrid(bits, vec, args.top_k) if getattr(args, "hybrid", False) \
+           else jaccard_search_exact(bits, args.top_k)
+
+    if not args.out:
+        for r in rows:
+            print(f"{r['id']}\t{r['name']}\tJ={r['jacc']:.3f}")
+    else:
+        df = pd.DataFrame(rows)
+        sep = "," if args.out.lower().endswith(".csv") else "\t"
+        df.to_csv(args.out, index=False, sep=sep)
+        console.print(f"Wrote {len(df)} results to [green]{args.out}[/]")
+
 # ---------- parser ----------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,6 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_res = sub.add_parser("restore-db", help="Restore from pg_dump file")
     p_res.add_argument("--dump", required=True)
     p_res.set_defaults(func=cmd_restore_db)
+
+    p_search = sub.add_parser("search-jaccard", help="Search compounds by Jaccard to a SMILES")
+    p_search.add_argument("--smiles", required=True)
+    p_search.add_argument("--top-k", type=int, default=20)
+    p_search.add_argument("--hybrid", action="store_true", help="Use pgvector candidate search")
+    p_search.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
+    p_search.set_defaults(func=cmd_search_jaccard)
 
     return p
 
