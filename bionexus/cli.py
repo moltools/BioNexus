@@ -1,6 +1,6 @@
 from __future__ import annotations
 from re import sub
-import os, sys, argparse, subprocess
+import os, sys, argparse, subprocess, logging
 import pandas as pd
 from rich.console import Console
 from bionexus.config import DEFAULT_NPATLAS_URL
@@ -13,6 +13,7 @@ from sqlalchemy import text
 console = Console()
 
 setup_logging()
+logger = logging.getLogger(__name__)
 
 # ---------- commands ----------
 
@@ -49,7 +50,7 @@ def cmd_load_npatlas(args: argparse.Namespace) -> None:
 
 def cmd_compute_fp(args: argparse.Namespace) -> None:
     from bionexus.etl.chemistry import backfill_fingerprints
-    done = backfill_fingerprints(batch=args.batch)
+    done = backfill_fingerprints(batch=args.batch, recompute=args.recompute)
     console.print(f"Computed fingerprints for {done} compounds (batch={args.batch})")
 
 def cmd_dump_db(args: argparse.Namespace) -> None:
@@ -83,7 +84,7 @@ def cmd_search_jaccard(args):
 
     bits, _pop, vec = _morgan_bits_and_vec(args.smiles)
     if not bits:
-        print("Invalid SMILES")
+        logger.warning("Could not compute fingerprint for SMILES")  
         return
 
     rows = jaccard_search_hybrid(bits, vec, args.top_k) if getattr(args, "hybrid", False) \
@@ -122,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_fp = sub.add_parser("compute-fp", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)
+    p_fp.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
     p_fp.set_defaults(func=cmd_compute_fp)
 
     p_dump = sub.add_parser("dump-db", help="Write pg_dump custom format")

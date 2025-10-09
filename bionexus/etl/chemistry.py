@@ -12,13 +12,13 @@ def _morgan_bits_and_vec(smiles: str, radius: int = 2, nbits: int = 2048) -> tup
         from rdkit import Chem, RDLogger
         from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
         RDLogger.DisableLog("rdApp.*")  # suppress warnings
-
+        
         m = Chem.MolFromSmiles(smiles)
 
         if not m:
             return None, None, None
 
-        gen = GetMorganGenerator(radius=radius, fpSize=nbits, includeChirality=True)
+        gen = GetMorganGenerator(radius=radius, fpSize=nbits, includeChirality=False)
         bv = gen.GetFingerprint(m)
         bitstr = bv.ToBitString()  # "010101..."
         pop = bitstr.count("1")
@@ -28,35 +28,35 @@ def _morgan_bits_and_vec(smiles: str, radius: int = 2, nbits: int = 2048) -> tup
     except Exception:
         return None, None, None
 
-def backfill_fingerprints(batch: int = 1000, radius: int = 2, nbits: int = 2048) -> int:
+def backfill_fingerprints(batch: int = 1000, recompute: bool = False, radius: int = 2, nbits: int = 2048) -> int:
     """
-    Compute Morgan(2048,r=2) for compounds that have SMILES and are
-    missing any of (bit, pop, vec). Commits per chunk, no server cursor.
+    Compute Morgan(2048, r=2) fingerprints for compounds with SMILES.
+    If recompute=True, overwrite all fingerprints.
+    Otherwise, only fill in rows where any fingerprint column is missing.
+    Commits per chunk (no server cursor).
     """
+    logger = logging.getLogger(__name__)
     done = 0
     last_id = 0
 
     with SessionLocal() as s:
         while True:
-            rows = s.scalars(
-                select(Compound)
-                .where(
-                    Compound.smiles.is_not(None),
+            q = select(Compound).where(Compound.smiles.is_not(None))
+            if not recompute:
+                q = q.where(
                     or_(
                         Compound.fp_morgan_b2048_r2_bit.is_(None),
                         Compound.fp_morgan_b2048_r2_pop.is_(None),
                         Compound.fp_morgan_b2048_r2_vec.is_(None),
-                    ),
-                    Compound.id > last_id,
+                    )
                 )
-                .order_by(Compound.id)
-                .limit(batch)
-            ).all()
+            q = q.where(Compound.id > last_id).order_by(Compound.id).limit(batch)
+            rows = s.scalars(q).all()
 
             if not rows:
                 break
 
-            for c in tqdm(rows):
+            for c in tqdm(rows, desc="Computing fingerprints"):
                 bits, pop, vec = _morgan_bits_and_vec(c.smiles, radius=radius, nbits=nbits)
                 c.fp_morgan_b2048_r2_bit = bits
                 c.fp_morgan_b2048_r2_pop = pop
@@ -65,7 +65,7 @@ def backfill_fingerprints(batch: int = 1000, radius: int = 2, nbits: int = 2048)
 
             s.commit()
             last_id = rows[-1].id
-            logger.info(f"[batch] committed {done} updated")
+            logger.info(f"[batch] committed {done} total updated")
 
-    logger.info(f"Backfill complete: {done} compounds updated")
+    logger.info(f"Fingerprint backfill complete: {done} compounds updated")
     return done
