@@ -7,11 +7,11 @@ from pgvector.sqlalchemy import Vector
 
 def jaccard_search_exact(bitstr: str, top_k: int = 50):
     """
-    Exact Jaccard (Tanimoto) on BIT(2048) fingerprints.
-    Filters out rows without a stored fingerprint.
+    Return: id, name (first found in compound_record), jacc
     """
     sql = text("""
-    SELECT c.id, c.name,
+    SELECT c.id,
+           n.name,
            CASE
              WHEN length(replace((c.fp_morgan_b2048_r2_bit | :qb)::text, '0','')) = 0
              THEN 1.0
@@ -19,6 +19,13 @@ def jaccard_search_exact(bitstr: str, top_k: int = 50):
                   / NULLIF(length(replace((c.fp_morgan_b2048_r2_bit | :qb)::text, '0','')), 0)
            END AS jacc
     FROM compound c
+    LEFT JOIN LATERAL (
+        SELECT r.name
+        FROM compound_record r
+        WHERE r.compound_id = c.id AND r.name IS NOT NULL
+        ORDER BY r.source, r.ext_id
+        LIMIT 1
+    ) AS n ON TRUE
     WHERE c.fp_morgan_b2048_r2_bit IS NOT NULL
     ORDER BY jacc DESC
     LIMIT :k
@@ -32,22 +39,33 @@ def jaccard_search_exact(bitstr: str, top_k: int = 50):
         return rows
 
 def jaccard_search_hybrid(bitstr: str, qvec: List[float], top_k: int = 50, cand_k: int = 2000):
+    """
+    Return: id, name (first found in compound_record), jacc
+    """
     sql = text("""
     WITH cand AS (
-      SELECT c.id, c.name, c.fp_morgan_b2048_r2_bit
+      SELECT c.id, c.fp_morgan_b2048_r2_bit
       FROM compound c
       WHERE c.fp_morgan_b2048_r2_bit IS NOT NULL
       ORDER BY c.fp_morgan_b2048_r2_vec <#> :qv   -- inner-product distance
       LIMIT :cand_k
     )
-    SELECT id, name,
+    SELECT c.id,
+           n.name,
            CASE
-             WHEN length(replace((fp_morgan_b2048_r2_bit | :qb)::text, '0','')) = 0
+             WHEN length(replace((c.fp_morgan_b2048_r2_bit | :qb)::text, '0','')) = 0
              THEN 1.0
-             ELSE length(replace((fp_morgan_b2048_r2_bit & :qb)::text, '0',''))::float
-                  / NULLIF(length(replace((fp_morgan_b2048_r2_bit | :qb)::text, '0','')), 0)
+             ELSE length(replace((c.fp_morgan_b2048_r2_bit & :qb)::text, '0',''))::float
+                  / NULLIF(length(replace((c.fp_morgan_b2048_r2_bit | :qb)::text, '0','')), 0)
            END AS jacc
-    FROM cand
+    FROM cand c
+    LEFT JOIN LATERAL (
+        SELECT r.name
+        FROM compound_record r
+        WHERE r.compound_id = c.id AND r.name IS NOT NULL
+        ORDER BY r.source, r.ext_id
+        LIMIT 1
+    ) AS n ON TRUE
     ORDER BY jacc DESC
     LIMIT :k
     """).bindparams(
@@ -56,5 +74,6 @@ def jaccard_search_hybrid(bitstr: str, qvec: List[float], top_k: int = 50, cand_
         bindparam("k"),
         bindparam("cand_k"),
     )
+
     with SessionLocal() as s:
         return s.execute(sql, {"qb": bitstr, "qv": qvec, "k": top_k, "cand_k": cand_k}).mappings().all()
