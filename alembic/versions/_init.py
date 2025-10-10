@@ -45,12 +45,18 @@ def upgrade():
         sa.Column("synonyms", sa.ARRAY(sa.String), nullable=True),
     )
 
-    op.create_unique_constraint("uq_compound_record_source_ext", "compound_record", ["source", "ext_id"])
+    # allow same (source, ext_id) to link to multiple compounds
+    op.create_unique_constraint("uq_compound_record_source_ext", "compound_record", ["compound_id", "source", "ext_id"])
     op.create_index("ix_compound_record_compound_id", "compound_record", ["compound_id"])
+    # speed lookups by accession
+    op.create_index("ix_compound_record_source_ext", "compound_record", ["source", "ext_id"], unique=False)
 
 def downgrade():
+    op.drop_index("ix_compound_record_source_ext", table_name="compound_record")
     op.drop_index("ix_compound_record_compound_id", table_name="compound_record")
-    op.drop_constraint("uq_compound_record_source_ext", "compound_record", type_="unique")
+    op.drop_constraint("uq_compound_record_compound_source_ext", "compound_record", type_="unique")
     op.drop_table("compound_record")
 
+    op.drop_constraint("uq_compound_inchikey", "compound", type_="unique")
+    op.drop_index("ix_compound_inchikey", table_name="compound")
     op.drop_table("compound")

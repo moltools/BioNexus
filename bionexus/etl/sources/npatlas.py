@@ -15,9 +15,6 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> int:
     seen_record_key: set[tuple[str, str]] = set()
 
     with SessionLocal() as s:
-        batch: list[Compound] = []
-        seen: set[str] = set()  # batch level
-
         for d in tqdm(iter_json(path), desc="Loading NPAtlas"):
             # unpack fields
             npaid = d["npaid"]
@@ -43,12 +40,12 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> int:
                 continue
             seen_record_key.add(rec_key)
 
-            # !) find or create canonical compound by inchikey
+            # 1) find or create canonical compound by inchikey
             comp = s.scalars(select(Compound).where(Compound.inchikey == inchikey)).first()
             if not comp:
                 # also avoid creating the same compound twice in one batch before flush
                 if inchikey in seen_inchikey:
-                    # if we have already staged it in this batch, fit if from batch list
+                    # if we have already staged it in this batch, fit it from batch list
                     comp = next((c for c in batch_compounds if c.inchikey == inchikey), None)
                 if not comp:
                     comp = Compound(
@@ -101,6 +98,7 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> int:
                 batch_compounds.clear()
                 batch_records.clear()
                 seen_inchikey.clear()  # safe to clear after flush
+                seen_record_key.clear()  # safe to clear after flush
 
         # final flush
         if batch_compounds: s.add_all(batch_compounds)

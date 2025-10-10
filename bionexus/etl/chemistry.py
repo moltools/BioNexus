@@ -7,17 +7,28 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+def smiles_to_inchikey(smiles: str) -> str | None:
+    try:
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import AllChem
+        RDLogger.DisableLog("rdApp.*")  # suppress warnings
+        m = Chem.MolFromSmiles(smiles)
+        if not m:
+            return None
+        inchi = Chem.MolToInchi(m)
+        inchikey = AllChem.InchiToInchiKey(inchi)
+        return inchikey
+    except Exception:
+        return None
+
 def _morgan_bits_and_vec(smiles: str, radius: int = 2, nbits: int = 2048) -> tuple[str | None, int | None, list[float] | None]:
     try:
         from rdkit import Chem, RDLogger
         from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
         RDLogger.DisableLog("rdApp.*")  # suppress warnings
-        
         m = Chem.MolFromSmiles(smiles)
-
         if not m:
             return None, None, None
-
         gen = GetMorganGenerator(radius=radius, fpSize=nbits, includeChirality=False)
         bv = gen.GetFingerprint(m)
         bitstr = bv.ToBitString()  # "010101..."

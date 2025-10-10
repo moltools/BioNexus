@@ -10,6 +10,8 @@ except Exception:
     pass
 
 DEFAULT_NPATLAS_URL = os.getenv("NPATLAS_URL", "").strip()
+DEFAULT_MIBIG_JSON_URL = os.getenv("MIBIG_JSON_URL", "").strip()
+DEFAULT_MIBIG_GBK_URL = os.getenv("MIBIG_GBK_URL", "").strip()
 DEFAULT_LOGGING_LVL = os.getenv("BIONEXUS_LOGGING_LVL", "INFO").strip().upper()
 
 def default_cache_dir() -> Path:

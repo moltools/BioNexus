@@ -3,7 +3,11 @@ from re import sub
 import os, sys, argparse, subprocess, logging
 import pandas as pd
 from rich.console import Console
-from bionexus.config import DEFAULT_NPATLAS_URL
+from bionexus.config import (
+    DEFAULT_NPATLAS_URL,
+    DEFAULT_MIBIG_JSON_URL,
+    DEFAULT_MIBIG_GBK_URL,
+)
 from bionexus.utils.logging import setup_logging
 from bionexus.utils.net import ensure_download, extract_if_needed
 from bionexus.db.models import Base
@@ -33,11 +37,12 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
 def cmd_load_npatlas(args: argparse.Namespace) -> None:
     from bionexus.etl.sources.npatlas import load_npatlas_file
 
+    # download and extract if needed
     url = args.url or DEFAULT_NPATLAS_URL
     if not url:
         console.print("[red]No NPAtlas URL set. Put NPATLAS_URL in .env or pass --url[/]")
         sys.exit(2)
-    local_path = ensure_download(url, args.cache_dir, args.filename, args.force)
+    local_path = ensure_download(url, args.cache_dir, args.force)
     extracted = extract_if_needed(local_path, args.cache_dir)
 
     def pick_data(files):  # choose a data file to load
@@ -45,8 +50,30 @@ def cmd_load_npatlas(args: argparse.Namespace) -> None:
         return cands[0] if cands else local_path
     
     data_path = pick_data(extracted) if extracted else local_path
+    print(data_path)
     n = load_npatlas_file(path=data_path, chunk_size=args.chunk_size)
     console.print(f"Loaded {n} NPAtlas compounds")
+
+def cmd_load_mibig(args: argparse.Namespace) -> None:
+    from bionexus.etl.sources.mibig import load_mibig_files
+
+    # download and extract if needed
+    url_json = args.url_json or DEFAULT_MIBIG_JSON_URL
+    url_gbk = args.url_gbk or DEFAULT_MIBIG_GBK_URL
+    if not url_json or not url_gbk:
+        console.print("[red]No MIBiG URL set. Put MIBIG_JSON_URL and MIBIG_GBK_URL in .env or pass --url-json and --url-gbk[/]")
+        sys.exit(2)
+    local_path_json = ensure_download(url_json, args.cache_dir, args.force)
+    local_path_gbk = ensure_download(url_gbk, args.cache_dir, args.force)
+    extracted_jsons = extract_if_needed(local_path_json, args.cache_dir)
+    extracted_gbks = extract_if_needed(local_path_gbk, args.cache_dir)
+
+    n_compounds, n_bgcs = load_mibig_files(
+        json_paths=extracted_jsons,
+        gbk_paths=extracted_gbks,
+        chunk_size=args.chunk_size
+    )
+    console.print(f"Loaded {n_bgcs} MIBiG BGCs and {n_compounds} associated compounds")
 
 def cmd_compute_fp(args: argparse.Namespace) -> None:
     from bionexus.etl.chemistry import backfill_fingerprints
@@ -116,10 +143,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_np = sub.add_parser("load-npatlas", help="Download (if needed) and load NPAtlas")
     p_np.add_argument("--url", default=None, help="Override NPAtlas download URL")
     p_np.add_argument("--cache-dir", default=None, help="Cache/work dir")
-    p_np.add_argument("--filename", default=None, help="Save-as filename")
     p_np.add_argument("--force", action="store_true", help="Redownload even if present")
     p_np.add_argument("--chunk-size", type=int, default=10000)
     p_np.set_defaults(func=cmd_load_npatlas)
+
+    p_mibig = sub.add_parser("load-mibig", help="Download (if needed) and load MIBiG")
+    p_mibig.add_argument("--url-json", default=None, help="Override MIBiG JSON download URL")
+    p_mibig.add_argument("--url-gbk", default=None, help="Override MIBiG GenBank download URL")
+    p_mibig.add_argument("--cache-dir", default=None, help="Cache/work dir")
+    p_mibig.add_argument("--force", action="store_true", help="Redownload even if present")
+    p_mibig.add_argument("--chunk-size", type=int, default=1000)
+    p_mibig.set_defaults(func=cmd_load_mibig)
 
     p_fp = sub.add_parser("compute-fp", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)

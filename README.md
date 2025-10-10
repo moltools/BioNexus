@@ -38,27 +38,35 @@
     bionexus upgrade head
     ```
 
-6) Load NPAtlas:
+6) Load data:
 
-    ```bash
-    bionexus load-npatlas
-    ```
+    * Load NPAtlas:
 
-7) (Optional) Compute fingerprints (requires RDKit):
+        ```bash
+        bionexus load-npatlas
+        ```
 
-    Make sure to have installed the `chem` extras:
+    * (Optional) Compute compound fingerprints (requires RDKit):
 
-    ```bash
-    poetry install --extras chem
-    ```
+        Make sure to have installed the `chem` extras:
 
-    Then run:
+        ```bash
+        poetry install --extras chem
+        ```
 
-    ```bash
-    bionexus compute-fp
-    ```
+        Then run:
 
-8) Dump for deployoment:
+        ```bash
+        bionexus compute-fp
+        ```
+
+    * Load MIBiG:
+
+        ```bash
+        bionexus load-mibig
+        ```
+
+7) Dump for deployoment:
 
     ```bash
     bionexus dump-db --out dumps/bionexus_$(date +%Y%m%d).dump
