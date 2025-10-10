@@ -2,6 +2,7 @@ from __future__ import annotations
 from re import sub
 import os, sys, argparse, subprocess, logging
 import pandas as pd
+from rich.table import Table
 from rich.console import Console
 from bionexus.config import (
     DEFAULT_NPATLAS_URL,
@@ -68,12 +69,12 @@ def cmd_load_mibig(args: argparse.Namespace) -> None:
     extracted_jsons = extract_if_needed(local_path_json, args.cache_dir)
     extracted_gbks = extract_if_needed(local_path_gbk, args.cache_dir)
 
-    n_compounds, n_bgcs = load_mibig_files(
+    n_compounds, n_records, n_regions = load_mibig_files(
         json_paths=extracted_jsons,
         gbk_paths=extracted_gbks,
         chunk_size=args.chunk_size
     )
-    console.print(f"Loaded {n_bgcs} MIBiG BGCs and {n_compounds} associated compounds")
+    console.print(f"Loaded {n_regions} MIBiG regions, {n_compounds} associated compound structures, and {n_records} associated compound records")
 
 def cmd_compute_fp(args: argparse.Namespace) -> None:
     from bionexus.etl.chemistry import backfill_fingerprints
@@ -114,14 +115,22 @@ def cmd_search_jaccard(args):
         logger.warning("Could not compute fingerprint for SMILES")  
         return
 
-    rows = jaccard_search_hybrid(bits, vec, args.top_k) if getattr(args, "hybrid", False) \
+    rows = jaccard_search_hybrid(bits, vec, args.top_k) \
+           if getattr(args, "hybrid", False) \
            else jaccard_search_exact(bits, args.top_k)
 
+    df = pd.DataFrame(rows)
     if not args.out:
-        for r in rows:
-            print(f"{r['id']}\t{r['name']}\tJ={r['jacc']:.3f}")
+        # console.print(df[["source", "name", "jacc"]])
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("id", style="dim", width=6)
+        table.add_column("source", style="dim", width=10)
+        table.add_column("name", style="white", width=30)
+        table.add_column("jacc", justify="right")
+        for _, row in df.iterrows():
+            table.add_row(f"{row['id']}", str(row["source"]), f"[cyan]{row['name']}", f"{row['jacc']:.3f}")
+        console.print(table)
     else:
-        df = pd.DataFrame(rows)
         sep = "," if args.out.lower().endswith(".csv") else "\t"
         df.to_csv(args.out, index=False, sep=sep)
         console.print(f"Wrote {len(df)} results to [green]{args.out}[/]")

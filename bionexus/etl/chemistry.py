@@ -46,7 +46,6 @@ def backfill_fingerprints(batch: int = 1000, recompute: bool = False, radius: in
     Otherwise, only fill in rows where any fingerprint column is missing.
     Commits per chunk (no server cursor).
     """
-    logger = logging.getLogger(__name__)
     done = 0
     last_id = 0
 
