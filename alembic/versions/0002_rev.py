@@ -3,7 +3,6 @@ Revision ID: 0002_rev
 Revises: 0001_init
 Create Date: 2025-10-10 21:56:15.797293
 """
-import os
 from alembic import op
 import sqlalchemy as sa
 
@@ -56,7 +55,7 @@ def upgrade():
     """)
 
 def downgrade():
-    # drop trigger & its function first
+    # drop trigger and its function first
     op.execute("DROP TRIGGER IF EXISTS genbank_region_set_timestamp ON public.genbank_region;")
     op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_genbank_region;")
 
