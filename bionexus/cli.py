@@ -75,10 +75,19 @@ def cmd_load_mibig(args: argparse.Namespace) -> None:
     )
     console.print(f"Loaded {n_regions} MIBiG regions, {n_compounds} associated compound structures, and {n_records} associated compound records")
 
-def cmd_compute_fp(args: argparse.Namespace) -> None:
+def cmd_annot_npc(args: argparse.Namespace) -> None:
+    from bionexus.etl.sources.npclassifier import annotate_with_npclassifier
+    n_annotated = annotate_with_npclassifier(args.recompute, args.batch)
+    console.print(f"Used NPClassifier to add {n_annotated} annotations for compounds")
+
+def cmd_compute_fp_morgan(args: argparse.Namespace) -> None:
     from bionexus.etl.chemistry import backfill_fingerprints
     done = backfill_fingerprints(batch=args.batch, recompute=args.recompute)
     console.print(f"Computed fingerprints for {done} compounds (batch={args.batch})")
+
+def cmd_compute_fp_retro(args: argparse.Namespace) -> None:
+    console.print("[yellow]Biosynthetic fingerprint computation is not yet implemented[/]")
+    exit(1)
 
 def cmd_dump_db(args: argparse.Namespace) -> None:
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
@@ -163,10 +172,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_mibig.add_argument("--chunk-size", type=int, default=1000)
     p_mibig.set_defaults(func=cmd_load_mibig)
 
-    p_fp = sub.add_parser("compute-fp", help="Compute fingerprints for compounds with SMILES")
+    p_annot_npc = sub.add_parser("annotate-npc", help="Annotate NPClassifier classes for compounds without one")
+    p_annot_npc.add_argument("--batch", type=int, default=2000)
+    p_annot_npc.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
+    p_annot_npc.set_defaults(func=cmd_annot_npc)
+
+    p_fp = sub.add_parser("compute-fp-morgan", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)
     p_fp.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
-    p_fp.set_defaults(func=cmd_compute_fp)
+    p_fp.set_defaults(func=cmd_compute_fp_morgan)
+
+    p_do = sub.add_parser("compute-fp-retro", help="Compute biosynthetic fingerprints for compounds and/or GenBank records")
+    p_do.add_argument("--for", choices=["compounds", "gbks", "both"], default="both", help="What to compute fingerprints for")
+    p_do.add_argument("--batch", type=int, default=2000)
+    p_do.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds/records")
+    p_do.set_defaults(func=cmd_compute_fp_retro)
 
     p_dump = sub.add_parser("dump-db", help="Write pg_dump custom format")
     p_dump.add_argument("--out", default="dumps/bionexus.dump")

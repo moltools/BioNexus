@@ -61,6 +61,13 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
                 if organism_genus and organism_species_name else None
             )
 
+            npclassifier = d.get("npclassifier", None)
+            if npclassifier:
+                npclassifier_isglycoside: bool | None = npclassifier.get("isglycoside", None)
+                npclassifier_class: list[str] = npclassifier.get("class_results", [])
+                npclassifier_pathway: list[str] = npclassifier.get("pathway_results", [])
+                npclassifier_superclass: list[str] = npclassifier.get("superclass_results", [])
+
             # must have an inchikey to unify; skip if missing
             if not inchikey:
                 continue
@@ -123,12 +130,22 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
                 new_records += 1
 
             # 3) collect annotations
-            for scheme, key, value  in [
+            annotations = [
                 # (scheme, key, value)
                 ("taxonomy", "type", organism_type),
                 ("taxonomy", "genus", organism_genus),
                 ("taxonomy", "species", organism_species),
-            ]:
+            ] + [
+                ("npclassifier", "isglycoside", str(npclassifier_isglycoside).lower()) if npclassifier_isglycoside is not None else None,
+            ] + [
+                ("npclassifier", "class", cls) for cls in npclassifier_class
+            ] + [
+                ("npclassifier", "pathway", pw) for pw in npclassifier_pathway
+            ] + [
+                ("npclassifier", "superclass", sc) for sc in npclassifier_superclass
+            ]
+
+            for scheme, key, value in annotations:
                 if not value:
                     continue
                 
