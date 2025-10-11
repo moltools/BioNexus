@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json, hashlib, logging
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from tqdm import tqdm
 from bionexus.config import DEFAULT_MAX_BYTES_GBK
 from bionexus.etl.chemistry import smiles_to_inchikey
@@ -31,6 +32,7 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
     # de-dupe within this load (by inchikey and by (inchikey, source, ext_id) pre-flush)
     seen_inchikey: set[str] = set()
     seen_record_key: set[tuple[str, str, str]] = set()  # (inchikey, source, ext_id)
+    seen_region_key: set[str] = set()  # (sha256)
 
     with SessionLocal() as s:
         # --- compounds from JSON files ----------------------------------------
@@ -121,7 +123,13 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
             enc = gbk_text.encode("utf-8", errors="replace")
             size_bytes = len(enc)
             sha256 = _sha256_bytes(enc)
+            
+            # skip if already seen in this batch
+            if sha256 in seen_region_key:
+                continue
+            seen_region_key.add(sha256)
 
+            # skip if too large
             if size_bytes > DEFAULT_MAX_BYTES_GBK:
                 logger.warning(f"Skipping {ext_id} ({size_bytes // 1_000_000:.2f} MB > {DEFAULT_MAX_BYTES_GBK // 1_000_000:.2f} MB max)")
                 continue
@@ -153,17 +161,30 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
             new_regions += 1
 
             if (len(batch_compounds) + len(batch_records) + len(batch_regions)) >= chunk_size:
-                s.add_all(batch_compounds + batch_records + batch_regions)
-                s.commit()
-                batch_compounds.clear()
-                batch_records.clear()
-                batch_regions.clear()
-                seen_inchikey.clear()
-                seen_record_key.clear()
-  
+                try:
+                    s.add_all(batch_compounds + batch_records + batch_regions)
+                    s.commit()
+                    batch_compounds.clear()
+                    batch_records.clear()
+                    batch_regions.clear()
+                    seen_inchikey.clear()
+                    seen_record_key.clear()
+                    seen_region_key.clear()
+
+                except SQLAlchemyError as e:
+                    s.rollback()
+                    logger.error(f"Error during MIBiG load chunk commit: {e}")
+                    raise
+
         # final commit
         if batch_compounds or batch_records or batch_regions:
-            s.add_all(batch_compounds + batch_records + batch_regions)
-            s.commit()
+            try:
+                s.add_all(batch_compounds + batch_records + batch_regions)
+                s.commit()
+
+            except SQLAlchemyError as e:
+                s.rollback()
+                logger.error(f"Error during MIBiG final load commit: {e}")
+                raise
 
     return new_compounds, new_records, new_regions

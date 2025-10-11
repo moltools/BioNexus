@@ -51,9 +51,8 @@ def cmd_load_npatlas(args: argparse.Namespace) -> None:
         return cands[0] if cands else local_path
     
     data_path = pick_data(extracted) if extracted else local_path
-    print(data_path)
-    n = load_npatlas_file(path=data_path, chunk_size=args.chunk_size)
-    console.print(f"Loaded {n} NPAtlas compounds")
+    n_compounds, n_records, n_annotations = load_npatlas_file(path=data_path, chunk_size=args.chunk_size)
+    console.print(f"Loaded {n_compounds} NPAtlas compounds, {n_records} associated compound records, and {n_annotations} associated annotations")
 
 def cmd_load_mibig(args: argparse.Namespace) -> None:
     from bionexus.etl.sources.mibig import load_mibig_files

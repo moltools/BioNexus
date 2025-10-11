@@ -1,11 +1,12 @@
 from __future__ import annotations
 from datetime import datetime
+from typing import Any
 from sqlalchemy import (
     ARRAY, BigInteger, DateTime, Float, ForeignKey, SmallInteger, String, Text,
-    UniqueConstraint, CheckConstraint, Index, text
+    CheckConstraint, UniqueConstraint, Index, text
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import BIT
+from sqlalchemy.dialects.postgresql import BIT, JSONB
 from pgvector.sqlalchemy import Vector
 
 class Base(DeclarativeBase):
@@ -34,7 +35,20 @@ class Compound(Base):
     fp_morgan_b2048_r2_vec: Mapped[list[float] | None] = mapped_column(Vector(2048))
 
     # backrefs
+    # allows to navigate from compound to records like:
+    # 
+    #   comp = s.get(Compound, 123)
+    #   for rec in comp.records:
+    #       print(rec.source, rec.ext_id)
+    #
     records: Mapped[list["CompoundRecord"]] = relationship(back_populates="compound", cascade="all, delete-orphan")
+    # allows to navigate from compound to annotations like:
+    # 
+    #   comp = s.get(Compound, 123)
+    #   for ann in comp.annotations:
+    #       print(ann.scheme, ann.key, ann.value)
+    #
+    annotations: Mapped[list["Annotation"]] = relationship(back_populates="compound", passive_deletes=True)  # no delete-orphan because FK is nullable by design
 
     __table_args__ = (UniqueConstraint("inchikey", name="uq_compound_inchikey"),)
 
@@ -69,9 +83,62 @@ class GenBankRegion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
 
+    # backrefs
+    # allows to navigate from region to annotations like:
+    # 
+    #   region = s.get(GenBankRegion, 123)
+    #   for ann in region.annotations:
+    #       print(ann.scheme, ann.key, ann.value)
+    #
+    annotations: Mapped[list["Annotation"]] = relationship(back_populates="genbank_region", passive_deletes=True)  # no delete-orphan because FK is nullable by design
+
     __table_args__ = (
         # uniqueness on (source, ext_id) (matches 0002_rev)
         UniqueConstraint("source", "ext_id", name="uq_genbank_region_source_ext"),
         # partial unique index on sha256 when present (matches 0002_rev)
         Index("ux_genbank_region_sha256_nonnull", "sha256", unique=True, postgresql_where=text("sha256 IS NOT NULL"),),
+    )
+
+class Annotation(Base):
+    __tablename__ = "annotation"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    # exactly one of these must be non-null (enforced via CHECK)
+    compound_id: Mapped[int | None] = mapped_column(ForeignKey("compound.id", ondelete="CASCADE"), index=True)
+    genbank_region_id: Mapped[int | None] = mapped_column(ForeignKey("genbank_region.id", ondelete="CASCADE"), index=True)
+
+    # flexible label triplet
+    scheme: Mapped[str] = mapped_column(String(64), nullable=False)
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[str] = mapped_column(String(256), nullable=False)
+
+    # optional structured payload
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+
+    # relationship (no delete-orphan because FK is nullable be design)
+    compound: Mapped["Compound | None"] = relationship(back_populates="annotations")
+    genbank_region: Mapped["GenBankRegion | None"] = relationship(back_populates="annotations")
+
+    __table_args__ = (
+        # enforce exactly one target
+        CheckConstraint(
+            "("
+            "(compound_id IS NOT NULL AND genbank_region_id IS NULL) OR "
+            "(compound_id IS NULL AND genbank_region_id IS NOT NULL)"
+            ")",
+            name="ck_annotation_exactly_one_target",
+        ),
+        # prevent duplicate facts per target
+        UniqueConstraint(
+            "compound_id", "genbank_region_id", "scheme", "key", "value",
+            name="uq_annotation_target_scheme_key_value",
+        ),
+        # common lookup indexes
+        Index("ix_annotation_scheme_key_value", "scheme", "key", "value"),
+        # JSONB GIN index (same as in 0003_rev)
+        Index("ix_annotation_metadata_json", metadata_json, postgresql_using="gin"),
     )

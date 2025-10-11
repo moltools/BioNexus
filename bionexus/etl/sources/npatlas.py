@@ -1,18 +1,40 @@
 from __future__ import annotations
+import logging
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.dialects.postgresql import insert
 from tqdm import tqdm
 from bionexus.utils.io import iter_json
 from bionexus.db.engine import SessionLocal
-from bionexus.db.models import Compound, CompoundRecord
+from bionexus.db.models import Annotation, Compound, CompoundRecord
 
-def load_npatlas_file(path: str, chunk_size: int = 10000) -> int:
+logger = logging.getLogger(__name__)
+
+def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
+    """
+    Load NPAtlas JSON into:
+      - compound (canonical by InChIKey)
+      - compound_record (source='npatlas', ext_id=npaid)
+      - annotation (taxonomy: type/genus/species)
+
+    Returns:
+      (new_compounds, new_records, new_annotations)
+    """
     new_compounds = 0
+    new_records = 0
+    new_annotations = 0
+
     batch_compounds: list[Compound] = []
     batch_records: list[CompoundRecord] = []
+    
+    # collect annotations as dicts and upsert in bulk per chunk
+    batch_ann_dicts: list[dict] = []  # each has {"_comp_obj", "scheme", "key", "value"}
+    pending_ann = 0  # count staged annotations to trigger chunk commit even if only ann present
 
     # de-dedupe within this load (by inchikey and by (source, ext_id))
     seen_inchikey: set[str] = set()
     seen_record_key: set[tuple[str, str]] = set()
+    seen_annotation_key: set[tuple[str, str, str, str]] = set()  # (inchikey, scheme, key, value) 
 
     with SessionLocal() as s:
         for d in tqdm(iter_json(path), desc="Loading NPAtlas"):
@@ -29,6 +51,15 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> int:
             exact_mass = d["exact_mass"]
             m_plus_h = d["m_plus_h"]
             m_plus_na = d["m_plus_na"]
+
+            tax = d["origin_organism"]
+            organism_type = tax["type"]
+            organism_genus = tax["genus"]
+            organism_species_name = tax["species"]
+            organism_species = (
+                f"{organism_genus} {organism_species_name}" 
+                if organism_genus and organism_species_name else None
+            )
 
             # must have an inchikey to unify; skip if missing
             if not inchikey:
@@ -89,20 +120,104 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> int:
                     synonyms=synonyms or None,
                 )
                 batch_records.append(rec)
+                new_records += 1
+
+            # 3) collect annotations
+            for scheme, key, value  in [
+                # (scheme, key, value)
+                ("taxonomy", "type", organism_type),
+                ("taxonomy", "genus", organism_genus),
+                ("taxonomy", "species", organism_species),
+            ]:
+                if not value:
+                    continue
+                
+                # avoid annotation dupes in this batch
+                ann_key = (inchikey, scheme, key, value)
+                if ann_key in seen_annotation_key:
+                    continue
+                seen_annotation_key.add(ann_key)
+
+                batch_ann_dicts.append({
+                    "_comp_obj": comp,  # link to compound object to resolve after flush
+                    "scheme": scheme,
+                    "key": key,
+                    "value": value,
+                })
+                pending_ann += 1
 
             # commit in chunks
-            if len(batch_compounds) + len(batch_records) >= chunk_size:
-                if batch_compounds: s.add_all(batch_compounds)
-                if batch_records: s.add_all(batch_records)
-                s.commit()
+            if (len(batch_compounds) + len(batch_records) + pending_ann) >= chunk_size:
+                try:
+                    if batch_compounds: s.add_all(batch_compounds)
+                    if batch_records: s.add_all(batch_records)
+                    s.flush()  # assign comp.id (PKs) before inserting annotations
+
+                    # bulk upsert annotations
+                    if batch_ann_dicts:
+                        ann_values = [{
+                            "compound_id": d["_comp_obj"].id,
+                            "scheme": d["scheme"],
+                            "key": d["key"],
+                            "value": d["value"],
+                            "metadata_json": None,
+                        } for d in batch_ann_dicts]
+                        if ann_values:
+                            stmt = (
+                                insert(Annotation)
+                                .values(ann_values)
+                                .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
+                                .returning(Annotation.id)
+                            )
+                            inserted_ids = s.execute(stmt).scalars().all()
+                            new_annotations += len(inserted_ids)
+                        
+                    s.commit()
+
+                except SQLAlchemyError as e:
+                    s.rollback()
+                    logger.error(f"Error during NPAtlas load chunk commit: {e}")
+                    raise
+
                 batch_compounds.clear()
                 batch_records.clear()
-                seen_inchikey.clear()  # safe to clear after flush
-                seen_record_key.clear()  # safe to clear after flush
+                batch_ann_dicts.clear()
+                seen_inchikey.clear()
+                seen_record_key.clear()
+                seen_annotation_key.clear()
+                pending_ann = 0
 
         # final flush
-        if batch_compounds: s.add_all(batch_compounds)
-        if batch_records: s.add_all(batch_records)
-        s.commit()
+        if batch_compounds or batch_records or batch_ann_dicts:
+            try:
+                if batch_compounds: s.add_all(batch_compounds)
+                if batch_records: s.add_all(batch_records)
+                s.flush()  # assign comp.id (PKs) before inserting annotations
 
-    return new_compounds
+                # bulk upsert annotations
+                if batch_ann_dicts:
+                    ann_values = [{
+                        "compound_id": d["_comp_obj"].id,
+                        "scheme": d["scheme"],
+                        "key": d["key"],
+                        "value": d["value"],
+                        "metadata_json": None,
+                    } for d in batch_ann_dicts]
+                    if ann_values:
+                        stmt = (
+                            insert(Annotation)
+                            .values(ann_values)
+                            .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
+                            .returning(Annotation.id)
+                        )
+                        inserted_ids = s.execute(stmt).scalars().all()
+                        new_annotations += len(inserted_ids)
+                    
+                s.commit()
+
+            except SQLAlchemyError as e:
+                s.rollback()
+                logger.error(f"Error during NPAtlas load final commit: {e}")
+                raise
+
+    return new_compounds, new_records, new_annotations

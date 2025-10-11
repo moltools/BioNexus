@@ -40,7 +40,7 @@
 
 6) Load data:
 
-    * Load NPAtlas:
+    * Load NPAtlas compound structures, their names and properties, and organism annotations:
 
         ```bash
         bionexus load-npatlas
