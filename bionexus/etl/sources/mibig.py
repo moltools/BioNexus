@@ -18,21 +18,27 @@ def _read_gbk_text(path: str) -> str:
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
-def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], chunk_size: int = 1000) -> tuple[int, int, int]:
+def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], chunk_size: int = 1000) -> tuple[int, int, int, int]:
     source = "mibig"
 
     new_compounds = 0
     new_records = 0
     new_regions = 0
+    new_annotations = 0
 
     batch_compounds: list[Compound] = []
     batch_records: list[CompoundRecord] = []
     batch_regions: list[GenBankRegion] = []
 
+    # collect annotations as dicts and upsert in bulk per chunk
+    batch_ann_dicts: list[dict] = []  # each has {"_comp_obj"/"_gbk_obj", "scheme", "key", "value"}
+    pending_ann = 0  # count staged annotations to trigger chunk commit even if only ann present
+
     # de-dupe within this load (by inchikey and by (inchikey, source, ext_id) pre-flush)
     seen_inchikey: set[str] = set()
     seen_record_key: set[tuple[str, str, str]] = set()  # (inchikey, source, ext_id)
     seen_region_key: set[str] = set()  # (sha256)
+    seen_annotation_key: set[tuple[str, str, str, str]] = set()  # (inchikey/sha256, scheme, key, value)
 
     with SessionLocal() as s:
         # --- compounds from JSON files ----------------------------------------
@@ -106,14 +112,32 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                             new_records += 1
 
                     # flush if batch full
-                    if (len(batch_compounds) + len(batch_records) + len(batch_regions)) >= chunk_size:
-                        s.add_all(batch_compounds + batch_records + batch_regions)
-                        s.commit()
+                    if (len(batch_compounds) + len(batch_records) + len(batch_regions) + pending_ann) >= chunk_size:
+                        try:
+                            if batch_compounds: s.add_all(batch_compounds)
+                            if batch_records: s.add_all(batch_records)
+                            if batch_regions: s.add_all(batch_regions)
+                            s.flush()  # assign ids to new objects for FKs in annotations
+
+                            # bulk upsert annotations
+                            # TODO
+
+                            s.commit()
+
+                        except SQLAlchemyError as e:
+                            s.rollback()
+                            logger.error(f"Error during MIBiG load chunk commit: {e}")
+                            raise
+
                         batch_compounds.clear()
                         batch_records.clear()
                         batch_regions.clear()
+                        batch_ann_dicts.clear()
                         seen_inchikey.clear()
                         seen_record_key.clear()
+                        seen_region_key.clear()
+                        seen_annotation_key.clear()
+                        pending_ann = 0
 
         # --- compounds from GenBank files -------------------------------------
         for path in tqdm(gbk_paths or [], desc="Loading MIBiG GenBank files"):
@@ -160,26 +184,44 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
             )
             new_regions += 1
 
-            if (len(batch_compounds) + len(batch_records) + len(batch_regions)) >= chunk_size:
+            if (len(batch_compounds) + len(batch_records) + len(batch_regions) + pending_ann) >= chunk_size:
                 try:
-                    s.add_all(batch_compounds + batch_records + batch_regions)
+                    if batch_compounds: s.add_all(batch_compounds)
+                    if batch_records: s.add_all(batch_records)
+                    if batch_regions: s.add_all(batch_regions)
+                    s.flush()  # assign ids to new objects for FKs in annotations
+
+                    # bulk upsert annotations
+                    # TODO
+
                     s.commit()
-                    batch_compounds.clear()
-                    batch_records.clear()
-                    batch_regions.clear()
-                    seen_inchikey.clear()
-                    seen_record_key.clear()
-                    seen_region_key.clear()
 
                 except SQLAlchemyError as e:
                     s.rollback()
                     logger.error(f"Error during MIBiG load chunk commit: {e}")
                     raise
 
-        # final commit
-        if batch_compounds or batch_records or batch_regions:
+                batch_compounds.clear()
+                batch_records.clear()
+                batch_regions.clear()
+                batch_ann_dicts.clear()
+                seen_inchikey.clear()
+                seen_record_key.clear()
+                seen_region_key.clear()
+                seen_annotation_key.clear()
+                pending_ann = 0
+
+        # final flush
+        if batch_compounds or batch_records or batch_regions or batch_ann_dicts:
             try:
-                s.add_all(batch_compounds + batch_records + batch_regions)
+                if batch_compounds: s.add_all(batch_compounds)
+                if batch_records: s.add_all(batch_records)
+                if batch_regions: s.add_all(batch_regions)
+                s.flush()  # assign ids to new objects for FKs in annotations
+
+                # bulk upsert annotations
+                # TODO
+
                 s.commit()
 
             except SQLAlchemyError as e:
@@ -187,4 +229,4 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                 logger.error(f"Error during MIBiG final load commit: {e}")
                 raise
 
-    return new_compounds, new_records, new_regions
+    return new_compounds, new_records, new_regions, new_annotations

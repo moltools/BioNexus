@@ -68,12 +68,12 @@ def cmd_load_mibig(args: argparse.Namespace) -> None:
     extracted_jsons = extract_if_needed(local_path_json, args.cache_dir)
     extracted_gbks = extract_if_needed(local_path_gbk, args.cache_dir)
 
-    n_compounds, n_records, n_regions = load_mibig_files(
+    n_compounds, n_records, n_regions, n_annotations = load_mibig_files(
         json_paths=extracted_jsons,
         gbk_paths=extracted_gbks,
         chunk_size=args.chunk_size
     )
-    console.print(f"Loaded {n_regions} MIBiG regions, {n_compounds} associated compound structures, and {n_records} associated compound records")
+    console.print(f"Loaded {n_regions} MIBiG regions, {n_compounds} associated compound structures, {n_records} associated compound records, and {n_annotations} associated annotations")
 
 def cmd_annot_npc(args: argparse.Namespace) -> None:
     from bionexus.etl.sources.npclassifier import annotate_with_npclassifier
