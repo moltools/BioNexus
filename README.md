@@ -46,7 +46,7 @@
         bionexus load-npatlas
         ```
 
-    * (Optional) Compute compound fingerprints (requires RDKit):
+    * (Optional) Compute compound fingerprints:
 
         Make sure to have installed the `chem` extras:
 
@@ -61,6 +61,14 @@
         ```
 
     * Load MIBiG:
+
+        Make sure to have installed the `bio` extras:
+
+        ```bash
+        poetry install --extras bio
+        ```
+
+        Then run:
 
         ```bash
         bionexus load-mibig

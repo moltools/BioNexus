@@ -17,9 +17,11 @@ pgvector = "^0.3.1"
 ijson = "^3.4.0"
 tqdm = "^4.67.1"
 pandas = "^2.3.3"
+biopython = {version = "^1.83", optional = true}
 
 [tool.poetry.extras]
 chem = ["rdkit"]
+bio = ["biopython"]
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

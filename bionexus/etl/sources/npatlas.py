@@ -83,7 +83,7 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
             if not comp:
                 # also avoid creating the same compound twice in one batch before flush
                 if inchikey in seen_inchikey:
-                    # if we have already staged it in this batch, fit it from batch list
+                    # if we have already staged it in this batch, fetch it from batch list
                     comp = next((c for c in batch_compounds if c.inchikey == inchikey), None)
                 if not comp:
                     comp = Compound(

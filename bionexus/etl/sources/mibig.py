@@ -1,24 +1,74 @@
 from __future__ import annotations
-import json, hashlib, logging
+import json, hashlib, logging, re
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.dialects.postgresql import insert
 from tqdm import tqdm
 from bionexus.config import DEFAULT_MAX_BYTES_GBK
 from bionexus.etl.chemistry import smiles_to_inchikey
 from bionexus.db.engine import SessionLocal
-from bionexus.db.models import Compound, CompoundRecord, GenBankRegion
+from bionexus.db.models import Annotation, Compound, CompoundRecord, GenBankRegion
 
 logger = logging.getLogger(__name__)
 
 def _read_gbk_text(path: str) -> str:
-    # allow .gbk, .gb, .gbff etc.
     with open(path, "rt", encoding="utf-8", errors="replace") as fh:
         return fh.read()
 
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
+def extract_taxonomy_info(record) -> dict[str, str | list[str] | None]:
+    organism = record.annotations.get("organism", "")
+    taxonomy = record.annotations.get("taxonomy", [])
+    genus = taxonomy[-1] if taxonomy else None
+
+    # Parse organism string more robustly
+    parts = organism.split()
+    genus_guess = parts[0] if parts else None
+    species_guess = None
+    strain_guess = None
+
+    if len(parts) > 1:
+        # Species is lowercase and not "sp."
+        if re.match(r"^[a-z-]+$", parts[1]) and parts[1] != "sp.":
+            species_guess = parts[1]
+            if len(parts) > 2:
+                strain_guess = " ".join(parts[2:])
+        else:
+            # no clear species, maybe "Streptomyces sp."
+            strain_guess = " ".join(parts[1:])
+
+    return {
+        "organism": organism or None,
+        "taxonomy": taxonomy,
+        "genus": genus or genus_guess,
+        "species": species_guess,
+        "strain": strain_guess,
+    }
+
+def extract_region_products(record):
+    """
+    Extract all 'product' values from features of type 'region'.
+    Returns a list of unique strings (e.g. ['NRPS', 'T1PKS']).
+    If no region features are found, returns [].
+    """
+    products = []
+    for feature in record.features:
+        if feature.type == "region":
+            prod = feature.qualifiers.get("product", [])
+            if prod:
+                products.extend(prod)
+    # deduplicate while preserving order
+    seen = set()
+    unique_products = [p for p in products if not (p in seen or seen.add(p))]
+    return unique_products
+
 def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], chunk_size: int = 1000) -> tuple[int, int, int, int]:
+    from Bio import SeqIO
+    from Bio.SeqRecord import SeqRecord
+    from Bio.SeqFeature import SeqFeature, FeatureLocation
+
     source = "mibig"
 
     new_compounds = 0
@@ -139,7 +189,7 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                         seen_annotation_key.clear()
                         pending_ann = 0
 
-        # --- compounds from GenBank files -------------------------------------
+        # --- regions from GenBank files ---------------------------------------
         for path in tqdm(gbk_paths or [], desc="Loading MIBiG GenBank files"):
             ext_id = path.split("/")[-1].replace(".gbk", "").replace(".gb", "")
 
@@ -147,43 +197,76 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
             enc = gbk_text.encode("utf-8", errors="replace")
             size_bytes = len(enc)
             sha256 = _sha256_bytes(enc)
-            
-            # skip if already seen in this batch
-            if sha256 in seen_region_key:
+
+            # parse taxonomy annotations from GenBank annotations
+            gbk_records = list(SeqIO.parse(path, "genbank"))
+            if len(gbk_records) != 1:
+                logger.warning(f"Skipping MIBiG GenBank {ext_id} due to unexpected record count {len(gbk_records)} != 1")
                 continue
-            seen_region_key.add(sha256)
+            gbk_record: SeqRecord = gbk_records[0]
+            annotations: list[tuple[str, str, str]] = []
+            tax_info = extract_taxonomy_info(gbk_record)
+            if tax_info["genus"]:
+                genus = tax_info["genus"]
+                annotations.append(("taxonomy", "genus", genus))
+            if tax_info["genus"] and tax_info["species"]:
+                species = f"{tax_info['genus']} {tax_info['species']}"
+                annotations.append(("taxonomy", "species", species))
+
+            # parse biosynthetic class annotations from GenBank features
+            region_products = extract_region_products(gbk_record)
+            for rp in region_products:
+                annotations.append(("biosynthesis", "product", rp))
 
             # skip if too large
             if size_bytes > DEFAULT_MAX_BYTES_GBK:
-                logger.warning(f"Skipping {ext_id} ({size_bytes // 1_000_000:.2f} MB > {DEFAULT_MAX_BYTES_GBK // 1_000_000:.2f} MB max)")
+                logger.warning(f"Skipping MIBiG GenBank {ext_id} due to size {size_bytes} > {DEFAULT_MAX_BYTES_GBK}")
                 continue
 
-            # prefer dedup by sha256 when present
-            by_hash = s.scalars(select(GenBankRegion).where(GenBankRegion.sha256 == sha256)).first()
-            if by_hash:
-                continue
-            
-            # also check uniqueness on (source, ext_id)
-            by_key = s.scalars(
-                select(GenBankRegion).where(
-                    GenBankRegion.source == source,
-                    GenBankRegion.ext_id == ext_id,
-                )
-            ).first()
-            if by_key:
-                continue
-            
-            batch_regions.append(
-                GenBankRegion(
-                    source=source,
-                    ext_id=ext_id,
-                    gbk_text=gbk_text,
-                    size_bytes=size_bytes,
-                    sha256=sha256,
-                )
-            )
-            new_regions += 1
+            # 1) find or create GenBankRegion by sha256
+            region = s.scalars(select(GenBankRegion).where(GenBankRegion.sha256 == sha256)).first()
+            if not region:
+                # also avoid creating same region twice in one batch before flush
+                if sha256 in seen_region_key:
+                    # if we have already staged in this batch, fetch it from batch list
+                    region = next((r for r in batch_regions if r.sha256 == sha256), None)
+                if not region:
+                    region = GenBankRegion(
+                        source=source,
+                        ext_id=ext_id,
+                        gbk_text=gbk_text,
+                        size_bytes=size_bytes,
+                        sha256=sha256,
+                    )
+                    batch_regions.append(region)
+                    seen_region_key.add(sha256)
+                    new_regions += 1
+            else:
+                # optionally update props to fill in gaps only
+                if region.gbk_text is None and gbk_text: region.gbk_text = gbk_text
+                if region.size_bytes is None and size_bytes: region.size_bytes = size_bytes
+                if region.ext_id is None and ext_id: region.ext_id = ext_id 
 
+            # 2) annotations from GBK features
+            for scheme, key, value in annotations:
+                if not value:
+                    continue
+
+                # avoid annotation dupes in this batch
+                ann_key = (sha256, scheme, key, value)
+                if ann_key in seen_annotation_key:
+                    continue
+                seen_annotation_key.add(ann_key)
+
+                batch_ann_dicts.append({
+                    "_gbk_obj": region,  # safe even if region not flushed
+                    "scheme": scheme,
+                    "key": key,
+                    "value": value,
+                })
+                pending_ann += 1
+            
+            # flush if batch full
             if (len(batch_compounds) + len(batch_records) + len(batch_regions) + pending_ann) >= chunk_size:
                 try:
                     if batch_compounds: s.add_all(batch_compounds)
@@ -192,7 +275,23 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                     s.flush()  # assign ids to new objects for FKs in annotations
 
                     # bulk upsert annotations
-                    # TODO
+                    if batch_ann_dicts:
+                        ann_values = [{
+                            "genbank_region_id": d["_gbk_obj"].id,
+                            "scheme": d["scheme"],
+                            "key": d["key"],
+                            "value": d["value"],
+                            "metadata_json": None,
+                        } for d in batch_ann_dicts]
+                        if ann_values:
+                            stmt = (
+                                insert(Annotation)
+                                .values(ann_values)
+                                .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
+                                .returning(Annotation.id)
+                            )
+                            inserted_ids = s.execute(stmt).scalars().all()
+                            new_annotations += len(inserted_ids)
 
                     s.commit()
 
@@ -220,7 +319,23 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                 s.flush()  # assign ids to new objects for FKs in annotations
 
                 # bulk upsert annotations
-                # TODO
+                if batch_ann_dicts:
+                    ann_values = [{
+                        "genbank_region_id": d["_gbk_obj"].id,
+                        "scheme": d["scheme"],
+                        "key": d["key"],
+                        "value": d["value"],
+                        "metadata_json": None,
+                    } for d in batch_ann_dicts]
+                    if ann_values:
+                        stmt = (
+                            insert(Annotation)
+                            .values(ann_values)
+                            .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
+                            .returning(Annotation.id)
+                        )
+                        inserted_ids = s.execute(stmt).scalars().all()
+                        new_annotations += len(inserted_ids)
 
                 s.commit()
 
