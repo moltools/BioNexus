@@ -114,7 +114,7 @@ def cmd_restore_db(args: argparse.Namespace) -> None:
     ]
     sys.exit(subprocess.call(cmd))
 
-def cmd_search_jaccard(args):
+def cmd_search_morgan(args):
     from bionexus.etl.chemistry import _morgan_bits_and_vec
     from bionexus.db.search import jaccard_search_exact, jaccard_search_hybrid
 
@@ -142,6 +142,10 @@ def cmd_search_jaccard(args):
         sep = "," if args.out.lower().endswith(".csv") else "\t"
         df.to_csv(args.out, index=False, sep=sep)
         console.print(f"Wrote {len(df)} results to [green]{args.out}[/]")
+
+def cmd_search_retro(args):
+    console.print("[yellow]Searching by biosynthetic fingerprint is not yet implemented[/]")
+    exit(1)
 
 # ---------- parser ----------
 
@@ -196,12 +200,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_res.add_argument("--dump", required=True)
     p_res.set_defaults(func=cmd_restore_db)
 
-    p_search = sub.add_parser("search-jaccard", help="Search compounds by Jaccard to a SMILES")
-    p_search.add_argument("--smiles", required=True)
-    p_search.add_argument("--top-k", type=int, default=20)
-    p_search.add_argument("--hybrid", action="store_true", help="Use pgvector candidate search")
-    p_search.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
-    p_search.set_defaults(func=cmd_search_jaccard)
+    p_search_m = sub.add_parser("search-morgan", help="Search compounds by Jaccard to a SMILES")
+    p_search_m.add_argument("--smiles", required=True)
+    p_search_m.add_argument("--top-k", type=int, default=20)
+    p_search_m.add_argument("--hybrid", action="store_true", help="Use pgvector candidate search")
+    p_search_m.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
+    p_search_m.set_defaults(func=cmd_search_morgan)
+
+    p_search_r = sub.add_parser("search-retro", help="Search compoundsa and BGCs to a biosynthetic fingerprint")
+    p_search_r.add_argument("--for", required=True, choices=["compound", "gbk"], help="Input type")
+    p_search_r.add_argument("--input", required=True, type=str, help="SMILES for 'compound' input type or path to GBK region file for 'gbk' input type")
+    p_search_r.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
+    p_search_r.set_defaults(func=cmd_search_retro)
 
     return p
 
