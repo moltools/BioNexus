@@ -18,6 +18,7 @@ ijson = "^3.4.0"
 tqdm = "^4.67.1"
 pandas = "^2.3.3"
 biopython = {version = "^1.83", optional = true}
+aiohttp = "^3.13.0"
 
 [tool.poetry.extras]
 chem = ["rdkit"]

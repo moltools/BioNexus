@@ -1,5 +1,9 @@
 from __future__ import annotations
-import json, hashlib, logging, re
+import json, hashlib, logging, re, random
+import asyncio
+import aiohttp
+from aiohttp import ClientResponseError, ClientConnectorError, ClientOSError, ClientPayloadError
+from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert
@@ -10,6 +14,97 @@ from bionexus.db.engine import SessionLocal
 from bionexus.db.models import Annotation, Compound, CompoundRecord, GenBankRegion
 
 logger = logging.getLogger(__name__)
+
+MIBIG_URL_TEMPLATE = "https://mibig.secondarymetabolites.org/repository/{accession}.{version}/generated/{accession}.gbk"
+
+async def _fetch_one(session, sem, url, out_path, retries=5, timeout_s=20):
+    """Download a single file with retries and exponential backoff."""
+    if out_path.exists() and out_path.stat().st_size > 0:
+        return out_path  # already downloaded
+
+    tmp_path = out_path.with_suffix(".part")
+
+    attempt = 0
+    while attempt < retries:
+        attempt += 1
+        try:
+            async with sem:
+                timeout = aiohttp.ClientTimeout(total=timeout_s)
+                async with session.get(url, timeout=timeout) as resp:
+                    if resp.status == 404:
+                        return None
+                    resp.raise_for_status()
+                    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(tmp_path, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(1 << 14):
+                            f.write(chunk)
+                    tmp_path.replace(out_path)
+                    return out_path
+        except (ClientConnectorError, ClientOSError, ClientPayloadError, asyncio.TimeoutError) as e:
+            err = f"{e.__class__.__name__}: {e}"
+        except ClientResponseError as e:
+            err = f"HTTP {e.status}: {e.message}"
+        except Exception as e:
+            err = str(e)
+
+        # backoff
+        await asyncio.sleep(min(2 ** (attempt - 1), 16) + random.uniform(0, 0.3))
+
+    logger.error(f"[fail] {url} ({err})")
+    if tmp_path.exists():
+        tmp_path.unlink(missing_ok=True)
+    return None
+
+async def _download_all(accessions, outdir, concurrency=10, retries=5, timeout_s=20):
+    connector = aiohttp.TCPConnector(limit=concurrency, limit_per_host=5)
+    sem = asyncio.Semaphore(concurrency)
+    headers = {
+        "User-Agent": "BionexusDownloader/1.0 (+contact: scripts@local)",
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br",
+    }
+
+    async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+        tasks = []
+        for accession, version in accessions:
+            url = MIBIG_URL_TEMPLATE.format(accession=accession, version=version)
+            out_path = Path(outdir) / f"{accession}.gbk"
+            tasks.append(_fetch_one(session, sem, url, out_path, retries, timeout_s))
+
+        results = []
+        with tqdm(total=len(tasks), desc="Downloading GBKs") as pbar:
+            for coro in asyncio.as_completed(tasks):
+                res = await coro
+                if res:
+                    results.append(res)
+                pbar.update(1)
+
+        return results
+
+def download_mibig_gbks(
+    accessions: list[tuple[str, str]],
+    outdir: str | Path,
+    *,
+    concurrency: int = 10,
+    retries: int = 5,
+    timeout: int = 20,
+) -> list[Path]:
+    """
+    Download MIBiG GBK files for given (accession, version) tuples.
+
+    Args:
+        accessions: list of (accession, version)
+        outdir: directory for downloaded files
+        concurrency: number of concurrent downloads
+        retries: retry attempts per file
+        timeout: per-request timeout in seconds
+
+    Returns:
+        list of Path objects for successfully downloaded (or existing) files
+    """
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    return asyncio.run(_download_all(accessions, outdir, concurrency, retries, timeout))
 
 def _read_gbk_text(path: str) -> str:
     with open(path, "rt", encoding="utf-8", errors="replace") as fh:

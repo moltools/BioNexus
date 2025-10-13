@@ -1,14 +1,10 @@
 from __future__ import annotations
-from re import sub
-import os, sys, argparse, subprocess, logging
+import os, sys, argparse, subprocess, logging, json
 import pandas as pd
+from pathlib import Path
 from rich.table import Table
 from rich.console import Console
-from bionexus.config import (
-    DEFAULT_NPATLAS_URL,
-    DEFAULT_MIBIG_JSON_URL,
-    DEFAULT_MIBIG_GBK_URL,
-)
+from bionexus.config import DEFAULT_NPATLAS_URL, DEFAULT_MIBIG_JSON_URL
 from bionexus.utils.logging import setup_logging
 from bionexus.utils.net import ensure_download, extract_if_needed
 from bionexus.db.models import Base
@@ -55,29 +51,40 @@ def cmd_load_npatlas(args: argparse.Namespace) -> None:
     console.print(f"Loaded {n_compounds} NPAtlas compounds, {n_records} associated compound records, and {n_annotations} associated annotations")
 
 def cmd_load_mibig(args: argparse.Namespace) -> None:
-    from bionexus.etl.sources.mibig import load_mibig_files
+    from bionexus.etl.sources.mibig import load_mibig_files, download_mibig_gbks
 
     # download and extract if needed
     url_json = args.url_json or DEFAULT_MIBIG_JSON_URL
-    url_gbk = args.url_gbk or DEFAULT_MIBIG_GBK_URL
-    if not url_json or not url_gbk:
+    if not url_json:
         console.print("[red]No MIBiG URL set. Put MIBIG_JSON_URL and MIBIG_GBK_URL in .env or pass --url-json and --url-gbk[/]")
         sys.exit(2)
     local_path_json = ensure_download(url_json, args.cache_dir, args.force)
-    local_path_gbk = ensure_download(url_gbk, args.cache_dir, args.force)
     extracted_jsons = extract_if_needed(local_path_json, args.cache_dir)
-    extracted_gbks = extract_if_needed(local_path_gbk, args.cache_dir)
+
+    # quickly loop over JSONS and extract accessions with their versions so we can download up-to-date GBKs with product info
+    # gbk_url we are using: https://mibig.secondarymetabolites.org/repository/{accession}.{version}/generated/{accession}.gbk
+    versioned_accessions: tuple[str, str] = []
+    for json_path in (extracted_jsons if extracted_jsons else [local_path_json]):
+        with open(json_path) as f:
+            data = json.load(f)
+            accession = data.get("accession", None)
+            version = data.get("version", None)
+            if accession and version:
+                versioned_accessions.append((accession, version))
+    console.print(f"Found {len(versioned_accessions)} MIBiG JSON files with accessions and versions")      
+    gbk_paths: list[Path] = download_mibig_gbks(accessions=versioned_accessions, outdir=os.path.join(args.cache_dir, "mibig_gbks"))
+    console.print(f"Downloaded {len(gbk_paths)} MIBiG GenBank files")
 
     n_compounds, n_records, n_regions, n_annotations = load_mibig_files(
         json_paths=extracted_jsons,
-        gbk_paths=extracted_gbks,
+        gbk_paths=[str(p) for p in gbk_paths],
         chunk_size=args.chunk_size
     )
     console.print(f"Loaded {n_regions} MIBiG regions, {n_compounds} associated compound structures, {n_records} associated compound records, and {n_annotations} associated annotations")
 
 def cmd_annot_npc(args: argparse.Namespace) -> None:
     from bionexus.etl.sources.npclassifier import annotate_with_npclassifier
-    n_annotated = annotate_with_npclassifier(args.recompute, args.batch)
+    n_annotated = annotate_with_npclassifier(args.recompute, chunk_size=args.batch)
     console.print(f"Used NPClassifier to add {n_annotated} annotations for compounds")
 
 def cmd_compute_fp_morgan(args: argparse.Namespace) -> None:
