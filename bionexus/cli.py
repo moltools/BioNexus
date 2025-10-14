@@ -188,6 +188,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_annot_npc.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
     p_annot_npc.set_defaults(func=cmd_annot_npc)
 
+    p_parse_compounds = sub.add_parser("parse-compounds", help="Parse compounds from database with RetroMol")
+    p_parse_compounds.add_argument("--batch", type=int, default=2000)
+    p_parse_compounds.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
+    p_parse_compounds.set_defaults(func=lambda args: console.print("[yellow]Not yet implemented[/]"))
+
+    p_parse_compounds = sub.add_parser("parse-bgcs", help="Parse BGCs from database with RetroMol")
+    p_parse_compounds.add_argument("--batch", type=int, default=2000)
+    p_parse_compounds.add_argument("--recompute", action="store_true", help="Force recomputation for all BGCs")
+    p_parse_compounds.set_defaults(func=lambda args: console.print("[yellow]Not yet implemented[/]"))
+
     p_fp = sub.add_parser("compute-fp-morgan", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)
     p_fp.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")

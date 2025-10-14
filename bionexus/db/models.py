@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 from sqlalchemy import (
-    ARRAY, BigInteger, DateTime, Float, ForeignKey, SmallInteger, String, Text,
+    ARRAY, Integer, BigInteger, DateTime, Float, ForeignKey, SmallInteger, String, Text,
     CheckConstraint, UniqueConstraint, Index, text
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -142,3 +142,57 @@ class Annotation(Base):
         # JSONB GIN index (same as in 0003_rev)
         Index("ix_annotation_metadata_json", metadata_json, postgresql_using="gin"),
     )
+
+class Ruleset(Base):
+    __tablename__ = "ruleset"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+
+    matching_rules_yaml: Mapped[str] = mapped_column(Text, nullable=False)
+    matching_rules_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    reaction_rules_yaml: Mapped[str] = mapped_column(Text, nullable=False)
+    reaction_rules_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    ruleset_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+
+    # backref to results
+    results: Mapped[list["RetroMolCompound"]] = relationship(back_populates="ruleset", cascade="all, delete-orphan")
+
+    __table_args__ = (Index("ix_ruleset_version", "version", unique=True),)
+
+class RetroMolCompound(Base):
+    __tablename__ = "retromol_compound"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    compound_id: Mapped[int] = mapped_column(ForeignKey("compound.id", ondelete="CASCADE"), nullable=False, index=True)
+    ruleset_id: Mapped[int] = mapped_column(ForeignKey("ruleset.id", ondelete="RESTRICT"), nullable=False, index=True)
+
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    fp_retro: Mapped[str | None] = mapped_column(BIT(2048))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+
+    compound: Mapped["Compound"] = relationship(back_populates="retromol_results")
+    ruleset: Mapped["Ruleset"] = relationship(back_populates="results")
+
+    __table_args__ = (
+        Index("ix_retromol_compound_compound_id", "compound_id"),
+        Index("ix_retromol_compound_ruleset_id", "ruleset_id"),
+        # only one result per (compound, ruleset)
+        UniqueConstraint(
+            "compound_id",
+            "ruleset_id",
+            name="uq_retromol_compound_compound_ruleset",
+        ),
+    )
+
+# add the backref to Compound
+Compound.retromol_results = relationship(
+    "RetroMolCompound",
+    back_populates="compound",
+    cascade="all, delete-orphan",
+)
