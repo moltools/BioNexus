@@ -1,9 +1,15 @@
+
+from __future__ import annotations
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
-from bionexus.db.models import Base
 from pathlib import Path
 import os
+
+# make sure we import local repo version, not installed package
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in os.sys.path:
+    os.sys.path.insert(0, str(REPO_ROOT))
 
 # load .env from repo root
 try:
@@ -16,21 +22,43 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-def get_url():
-    return os.getenv("BIONEXUS_DB_URL")
+# import module that defines base and all models
+from bionexus.db import models as bnx_models
+target_metadata = bnx_models.Base.metadata
 
-target_metadata = Base.metadata
+def get_url():
+    url = os.getenv("BIONEXUS_DB_URL")
+    if not url:
+        raise RuntimeError("BIONEXUS_DB_URL environment variable not set")
+    return url
 
 def run_migrations_offline():
     url = get_url()
-    context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        compare_type=True,
+        compare_server_default=True,
+        # include_schemas=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
 def run_migrations_online():
-    connectable = engine_from_config({"sqlalchemy.url": get_url()}, prefix="sqlalchemy.", poolclass=pool.NullPool)
+    connectable = engine_from_config(
+        {"sqlalchemy.url": get_url()},
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool
+    )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            compare_server_default=True,
+            # include_schemas=True,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

@@ -16,6 +16,13 @@ console = Console()
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# ---------- helpers -----------
+
+def _run_alembic(*args: str) -> int:
+    cmd = [sys.executable, "-m", "alembic", *args]
+    logger.debug(f"Running Alembic command: {' '.join(cmd)}")
+    return subprocess.call(cmd)
+
 # ---------- commands ----------
 
 def cmd_init_db(args: argparse.Namespace) -> None:
@@ -28,8 +35,49 @@ def cmd_init_db(args: argparse.Namespace) -> None:
 
 def cmd_upgrade(args: argparse.Namespace) -> None:
     rev = args.rev or "head"
-    rc = subprocess.call([sys.executable, "-m", "alembic", "upgrade", rev])
+    rc = _run_alembic("upgrade", rev)
     sys.exit(rc)
+
+def cmd_downgrade(args: argparse.Namespace) -> None:
+    rev = args.rev
+    if not rev:
+        console.print("[red]You must provide a revision to downgrade to (e.g., -1, base, or a rev id)[/]")
+        sys.exit(2)
+    sys.exit(_run_alembic("downgrade", rev))
+
+def cmd_revision(args: argparse.Namespace) -> None:
+    if not args.message:
+        console.print("[red]You must provide a message for the revision[/]")
+        sys.exit(2)
+
+    cmd = ["revision", "--autogenerate", "-m", args.message]
+    if args.head:
+        cmd += ["--head", args.head]
+    if args.splice:
+        cmd += ["--splice"]
+    if args.rev_id:
+        cmd += ["--rev-id", args.rev_id]
+    for dep in (args.depends_on or []):
+        cmd += ["--depends-on", dep]
+    for label in (args.branch_label or []):
+        cmd += ["--branch-label", label]
+
+    sys.exit(_run_alembic(*cmd))
+
+def cmd_history(args: argparse.Namespace) -> None:
+    sys.exit(_run_alembic("history", "--verbose"))
+
+def cmd_current(args: argparse.Namespace) -> None:
+    sys.exit(_run_alembic("current", "--verbose"))
+
+def cmd_heads(args: argparse.Namespace) -> None:
+    sys.exit(_run_alembic("heads", "--verbose"))
+
+def cmd_stamp(args: argparse.Namespace) -> None:
+    if not args.rev:
+        console.print("[red]Provide a revision to stamp (e.g. head or a specific rev id)[/]")
+        sys.exit(2)
+    sys.exit(_run_alembic("stamp", args.rev))
 
 def cmd_load_npatlas(args: argparse.Namespace) -> None:
     from bionexus.etl.sources.npatlas import load_npatlas_file
@@ -86,6 +134,23 @@ def cmd_annot_npc(args: argparse.Namespace) -> None:
     from bionexus.etl.sources.npclassifier import annotate_with_npclassifier
     n_annotated = annotate_with_npclassifier(args.recompute, chunk_size=args.batch)
     console.print(f"Used NPClassifier to add {n_annotated} annotations for compounds")
+
+def cmd_parse_compounds(args: argparse.Namespace) -> None:
+    from bionexus.etl.sources.retromol import parse_compounds_with_retromol
+    cache_dir = Path(args.cache_dir) if args.cache_dir else Path("./retromol_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    n_parsed = parse_compounds_with_retromol(
+        cache_dir=cache_dir,
+        recompute=args.recompute,
+        chunk_size=args.batch,
+        workers=args.workers
+    )
+    console.print(f"Used RetroMol to parse {n_parsed} compounds")
+
+def cmd_parse_bgcs(args: argparse.Namespace) -> None:
+    from bionexus.etl.sources.retromol import parse_bgcs_with_retromol
+    n_parsed = parse_bgcs_with_retromol(args.recompute, chunk_size=args.batch)
+    console.print(f"Used RetroMol to parse {n_parsed} BGCs")
 
 def cmd_compute_fp_morgan(args: argparse.Namespace) -> None:
     from bionexus.etl.chemistry import backfill_fingerprints
@@ -168,6 +233,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_up.add_argument("rev", nargs="?", default="head")
     p_up.set_defaults(func=cmd_upgrade)
 
+    p_rev = sub.add_parser("revision", help="Create Alembic revision with --autogenerate")
+    p_rev.add_argument("-m", "--message", required=True, help="Revision message")
+    p_rev.add_argument("--head", default="head", help="Base head for the new revision (default: head)")
+    p_rev.add_argument("--splice", action="store_true", help="Create a new branch from the given head")
+    p_rev.add_argument("--rev-id", default=None, help="Hardcode a specific revision id")
+    p_rev.add_argument("--depends-on", action="append", default=[], help="Add depends_on revision id (repeatable)")
+    p_rev.add_argument("--branch-label", action="append", default=[], help="Add branch label (repeatable)")
+    p_rev.set_defaults(func=cmd_revision)
+
+    p_hist = sub.add_parser("history", help="Show Alembic history")
+    p_hist.set_defaults(func=cmd_history)
+
+    p_curr = sub.add_parser("current", help="Show current DB revision(s)")
+    p_curr.set_defaults(func=cmd_current)
+
+    p_heads = sub.add_parser("heads", help="Show head revision(s)")
+    p_heads.set_defaults(func=cmd_heads)
+
+    p_stamp_cmd = sub.add_parser("stamp", help="Stamp the database with a revision without running migrations")
+    p_stamp_cmd.add_argument("rev", help="Revision to stamp (e.g. head, base, or a rev id)")
+    p_stamp_cmd.set_defaults(func=cmd_stamp)
+
+    p_down = sub.add_parser("downgrade", help="Run Alembic downgrade")
+    p_down.add_argument("rev", help="Revision to downgrade to (e.g. -1, base, or a rev id)")
+    p_down.set_defaults(func=cmd_downgrade)
+
     p_np = sub.add_parser("load-npatlas", help="Download (if needed) and load NPAtlas")
     p_np.add_argument("--url", default=None, help="Override NPAtlas download URL")
     p_np.add_argument("--cache-dir", default=None, help="Cache/work dir")
@@ -189,14 +280,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_annot_npc.set_defaults(func=cmd_annot_npc)
 
     p_parse_compounds = sub.add_parser("parse-compounds", help="Parse compounds from database with RetroMol")
+    p_parse_compounds.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
     p_parse_compounds.add_argument("--batch", type=int, default=2000)
     p_parse_compounds.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
-    p_parse_compounds.set_defaults(func=lambda args: console.print("[yellow]Not yet implemented[/]"))
+    p_parse_compounds.add_argument("--workers", type=int, default=1, help="Number of parallel workers to use")
+    p_parse_compounds.set_defaults(func=cmd_parse_compounds)
 
-    p_parse_compounds = sub.add_parser("parse-bgcs", help="Parse BGCs from database with RetroMol")
-    p_parse_compounds.add_argument("--batch", type=int, default=2000)
-    p_parse_compounds.add_argument("--recompute", action="store_true", help="Force recomputation for all BGCs")
-    p_parse_compounds.set_defaults(func=lambda args: console.print("[yellow]Not yet implemented[/]"))
+    p_parse_bgcs = sub.add_parser("parse-bgcs", help="Parse BGCs from database with RetroMol")
+    p_parse_bgcs.add_argument("--batch", type=int, default=2000)
+    p_parse_bgcs.add_argument("--recompute", action="store_true", help="Force recomputation for all BGCs")
+    p_parse_bgcs.set_defaults(func=cmd_parse_bgcs)
 
     p_fp = sub.add_parser("compute-fp-morgan", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)
