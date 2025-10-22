@@ -57,7 +57,7 @@
         Then run:
 
         ```bash
-        bionexus compute-fp
+        bionexus compute-fp-morgan
         ```
 
     * Load MIBiG:
