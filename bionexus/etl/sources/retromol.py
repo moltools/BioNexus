@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 from typing import List, Dict, Any
-import os, hashlib, logging, shutil, subprocess
+import os
+import hashlib
+import logging
+import shutil
+import subprocess
 from pathlib import Path
 from importlib.resources import files
 
@@ -23,38 +27,54 @@ SMILES_COL_NAME = "smiles"
 
 
 def _sha256_hex(s: str) -> str:
+    """
+    Compute the SHA256 hex digest of a given string.
+
+    :param s: input string
+    :return: SHA256 hex digest
+    """
     return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
 
 
 def parse_compounds_with_retromol(
-    cache_dir: Path,
-    recompute: bool = False,
-    chunk_size: int = 2000,
-    workers: int = 1
+    cache_dir: Path, recompute: bool = False, chunk_size: int = 2000, workers: int = 1
 ) -> int:
+    """
+    Parse compounds in the database using RetroMol and store results.
+
+    :param cache_dir: directory to use for caching input/output files
+    :param recompute: if True, recompute results for all compounds
+    :param chunk_size: number of results to upsert in each database transaction
+    :param workers: number of parallel workers to use for RetroMol processing
+    :return: number of new results inserted
+    """
     try:
-        # import retromol package
+        # Import retromol package
         import retromol
         import retromol.data
         from retromol.helpers import iter_json
 
-        # check if retromol is an installed command line tool
+        # Check if retromol is an installed command line tool
         if shutil.which("retromol") is None:
             raise ImportError("retromol command line tool not found in PATH")
-    except ImportError as e:
-        logger.error("retromol package or command line tool not found. Please install retromol.")
+    except ImportError:
+        logger.error(
+            "retromol package or command line tool not found. Please install retromol."
+        )
         return -1
-    
-    # limit number of workers to at least one, and 1 below number of CPU cores
+
+    # Limit number of workers to at least one, and 1 below number of CPU cores
     max_workers = max(1, os.cpu_count() - 1)
     workers = min(max(1, workers), max_workers)
-    logger.info(f"Using {workers} parallel workers for RetroMol processing (max available: {max_workers})")
+    logger.info(
+        f"Using {workers} parallel workers for RetroMol processing (max available: {max_workers})"
+    )
 
-    # ensure cache_dir exists
+    # Ensure cache_dir exists
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # get sha256 of default rulesets
+    # Get sha256 of default rulesets
     path_matching = files(retromol.data).joinpath("default_matching_rules.yml")
     path_reaction = files(retromol.data).joinpath("default_reaction_rules.yml")
     matching_rules_yaml = path_matching.read_text()
@@ -62,7 +82,7 @@ def parse_compounds_with_retromol(
     matching_sha = _sha256_hex(matching_rules_yaml)
     reaction_sha = _sha256_hex(reaction_rules_yaml)
 
-    # determine number of compounds to process
+    # Determine number of compounds to process
     with SessionLocal() as s:
         # Look up by BOTH section SHAs (each is unique; together uniquely identify row)
         ruleset = s.execute(
@@ -83,19 +103,21 @@ def parse_compounds_with_retromol(
                 # DO NOT set ruleset_sha256; DB trigger computes it
             )
             s.add(ruleset)
-            s.flush()   # obtain PK before commit if needed downstream
+            s.flush()  # obtain PK before commit if needed downstream
             s.commit()
             s.refresh(ruleset)  # get trigger-computed fields (version, ruleset_sha256)
-        
+
         ruleset_id = ruleset.id
 
         # Build query of compounds to process
-        base_q = select(Compound.id, Compound.smiles).where(Compound.smiles.is_not(None))
+        base_q = select(Compound.id, Compound.smiles).where(
+            Compound.smiles.is_not(None)
+        )
 
         if recompute:
             q = base_q
         else:
-            # anti-join: compounds WITHOUT a retromol result for this ruleset
+            # Anti-join: compounds WITHOUT a retromol result for this ruleset
             exists_subq = (
                 select(literal(1))
                 .select_from(RetroMolCompound)
@@ -112,10 +134,10 @@ def parse_compounds_with_retromol(
         rows = s.execute(q).all()
         logger.info(f"{len(rows)} compounds to process with RetroMol")
 
-    # write out rows to TSV in cache_dir, save path
+    # Write out rows to TSV in cache_dir, save path
     smiles_path = cache_dir.joinpath("retromol_input.tsv")
     with smiles_path.open("w") as f:
-        # write header
+        # Write header
         f.write(f"{ID_COL_NAME}\t{SMILES_COL_NAME}\n")
         for compound_id, smiles in rows:
             f.write(f"{compound_id}\t{smiles}\n")
@@ -125,24 +147,37 @@ def parse_compounds_with_retromol(
     results_path = cache_dir.joinpath("results.jsonl")
     if recompute and results_path.exists():
         results_path.unlink()
-        logger.info(f"Deleted existing results file at {results_path} due to recompute=True")
+        logger.info(
+            f"Deleted existing results file at {results_path} due to recompute=True"
+        )
 
     if not results_path.exists():
         # Run RetroMol on compounds
-        subprocess.run([
-            "retromol",
-            "-o", str(cache_dir),
-            "batch",
-            "--results", "jsonl",
-            "--jsonl-path", str(results_path),
-            "--table", str(smiles_path),
-            "--separator", "tab",
-            "--id-col", ID_COL_NAME,
-            "--smiles-col", SMILES_COL_NAME,
-            "--workers", str(workers),
-        ], check=True)
+        subprocess.run(
+            [
+                "retromol",
+                "-o",
+                str(cache_dir),
+                "batch",
+                "--results",
+                "jsonl",
+                "--jsonl-path",
+                str(results_path),
+                "--table",
+                str(smiles_path),
+                "--separator",
+                "tab",
+                "--id-col",
+                ID_COL_NAME,
+                "--smiles-col",
+                SMILES_COL_NAME,
+                "--workers",
+                str(workers),
+            ],
+            check=True,
+        )
 
-    # stream results.jsonl and upset in chunks
+    # Stream results.jsonl and upset in chunks
     to_upsert = []
     n_seen = 0
     n_bad = 0
@@ -153,7 +188,7 @@ def parse_compounds_with_retromol(
     def flush_chunk(session, payload: List[Dict[str, Any]]) -> tuple[int, int]:
         """
         Flush a chunk of results to the database using an upsert operation.
-        
+
         :param session: SQLAlchemy session
         :param payload: list of result dicts to insert/update
         :return: tuple of (n_inserted, n_updated)
@@ -162,12 +197,10 @@ def parse_compounds_with_retromol(
             return (0, 0)
         stmt = insert(RetroMolCompound).values(payload)
         stmt = stmt.on_conflict_do_update(
-            # either works (see migration 0005_rev)
             constraint="uq_retromol_compound_compound_ruleset",
-            # index_elements=["compound_id", "ruleset_id"],
             set_={
                 "result_json": stmt.excluded.result_json,
-            }
+            },
         )
         stmt = stmt.returning(literal_column("xmax = 0").label("inserted"))
         res = session.execute(stmt)
@@ -178,24 +211,26 @@ def parse_compounds_with_retromol(
         return (ins, upd)
 
     with SessionLocal() as s:
-        for rec in tqdm(iter_json(results_path, jsonl=True), desc="Loading RetroMol results"):
+        for rec in tqdm(
+            iter_json(results_path, jsonl=True), desc="Loading RetroMol results"
+        ):
             n_seen += 1
 
-            # basic validation
+            # Basic validation
             result_json = rec.get("result")
             if isinstance(result_json, dict):
                 payload_json = result_json
             else:
                 n_bad += 1
                 continue
-            
-            # extract compound_id
+
+            # Extract compound_id
             cid = result_json.get("input_id")
             if cid is None:
                 logger.warning("Missing compound_id in result; skipping")
                 n_bad += 1
                 continue
-            
+
             row = {
                 "compound_id": int(cid),
                 "ruleset_id": int(ruleset_id),
@@ -204,7 +239,7 @@ def parse_compounds_with_retromol(
             to_upsert.append(row)
 
             if len(to_upsert) >= chunk_size:
-                try: 
+                try:
                     ins, upd = flush_chunk(s, to_upsert)
                     n_inserted_total += ins
                     n_updated_total += upd
@@ -215,7 +250,7 @@ def parse_compounds_with_retromol(
                 finally:
                     to_upsert.clear()
 
-        # flush any remaining
+        # Flush any remaining
         if to_upsert:
             try:
                 ins, upd = flush_chunk(s, to_upsert)
@@ -228,10 +263,8 @@ def parse_compounds_with_retromol(
             finally:
                 to_upsert.clear()
 
-    logger.info(f"Inserted {n_inserted_total} new RetroMol results, updated {n_updated_total} existing results")
+    logger.info(
+        f"Inserted {n_inserted_total} new RetroMol results, updated {n_updated_total} existing results"
+    )
 
     return n_inserted_total
-
-
-def parse_bgcs_with_retromol(recompute: bool = False, chunk_size: int = 2000) -> int:
-    return 0

@@ -3,6 +3,7 @@ Revision ID: 0004_rev
 Revises: 0003_rev
 Create Date: 2025-10-14 12:25:00.000000
 """
+
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import BIT, JSONB
@@ -11,6 +12,7 @@ revision = "0004_rev"
 down_revision = "0003_rev"
 branch_labels = None
 depends_on = None
+
 
 def upgrade():
     # for digest() to compute SHA-256 in SQL
@@ -21,19 +23,28 @@ def upgrade():
     op.create_table(
         "ruleset",
         sa.Column("id", sa.BigInteger, primary_key=True),
-        sa.Column("version", sa.Integer, nullable=False, unique=True),  # auto-assign by trigger
-        
+        sa.Column(
+            "version", sa.Integer, nullable=False, unique=True
+        ),  # auto-assign by trigger
         # store rules as text (YAML) for both monomers and reaction rules, also store sha256 for integrity
         sa.Column("matching_rules_yaml", sa.Text, nullable=False),
         sa.Column("matching_rules_sha256", sa.String(64), nullable=False, unique=True),
         sa.Column("reaction_rules_yaml", sa.Text, nullable=False),
         sa.Column("reaction_rules_sha256", sa.String(64), nullable=False, unique=True),
-
         # combined content hash (enforces uniqueness of the pair)
         sa.Column("ruleset_sha256", sa.String(64), nullable=False, unique=True),
-
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("NOW()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("NOW()"),
+            nullable=False,
+        ),
     )
 
     # timestamps (auto-update updated_at)
@@ -131,22 +142,49 @@ def upgrade():
     op.create_table(
         "retromol_compound",
         sa.Column("id", sa.BigInteger, primary_key=True),
-        sa.Column("compound_id", sa.BigInteger, sa.ForeignKey("compound.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "compound_id",
+            sa.BigInteger,
+            sa.ForeignKey("compound.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         # RESTRICT: if ruleset is in use, don't allow deletion
-        sa.Column("ruleset_id", sa.BigInteger, sa.ForeignKey("ruleset.id", ondelete="RESTRICT"), nullable=False),
-
+        sa.Column(
+            "ruleset_id",
+            sa.BigInteger,
+            sa.ForeignKey("ruleset.id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
         # structured payload (for provenance, scores, parameters, etc.)
         sa.Column("result_json", JSONB, nullable=False),
-
-        sa.Column("fp_retro", BIT(2048), nullable=True),
-
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("fp_retro", BIT(512), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("NOW()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("NOW()"),
+            nullable=False,
+        ),
     )
 
     # speed lookups by compound or ruleset
-    op.create_index("ix_retromol_compound_compound_id", "retromol_compound", ["compound_id"], unique=False)
-    op.create_index("ix_retromol_compound_ruleset_id", "retromol_compound", ["ruleset_id"], unique=False)
+    op.create_index(
+        "ix_retromol_compound_compound_id",
+        "retromol_compound",
+        ["compound_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_retromol_compound_ruleset_id",
+        "retromol_compound",
+        ["ruleset_id"],
+        unique=False,
+    )
 
     # tmestamp tigger (table-scoped function name to avoid collisions)
     op.execute("""
@@ -165,9 +203,12 @@ def upgrade():
     EXECUTE FUNCTION public.set_timestamp_retromol_compound();
     """)
 
+
 def downgrade():
     # drop child triggers/indexes/tables first
-    op.execute("DROP TRIGGER IF EXISTS retromol_compound_set_timestamp ON public.retromol_compound;")
+    op.execute(
+        "DROP TRIGGER IF EXISTS retromol_compound_set_timestamp ON public.retromol_compound;"
+    )
     op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_retromol_compound;")
     op.drop_index("ix_retromol_compound_ruleset_id", table_name="retromol_compound")
     op.drop_index("ix_retromol_compound_compound_id", table_name="retromol_compound")

@@ -1,10 +1,10 @@
 from alembic import op
-import sqlalchemy as sa
 
 revision = "0005_rev"
 down_revision = "0004_rev"
 branch_labels = None
 depends_on = None
+
 
 def upgrade():
     # 1) remove duplicates (keep the greatest id per (compound_id, ruleset_id); adjust policy if you prefer)
@@ -22,6 +22,7 @@ def upgrade():
         "retromol_compound",
         ["compound_id", "ruleset_id"],
     )
+
 
 def downgrade():
     op.drop_constraint(

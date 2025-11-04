@@ -3,6 +3,7 @@ Revision ID: 0003_rev
 Revises: 0002_rev
 Create Date: 2025-10-11 10:32:00.000000
 """
+
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
@@ -12,15 +13,24 @@ down_revision = "0002_rev"
 branch_labels = None
 depends_on = None
 
+
 def upgrade():
     op.create_table(
         "annotation",
         sa.Column("id", sa.BigInteger, primary_key=True),
-
         # polymorphic target: either compound OR genbank_region (exactly one non-null)
-        sa.Column("compound_id", sa.BigInteger, sa.ForeignKey("compound.id", ondelete="CASCADE"), nullable=True),
-        sa.Column("genbank_region_id", sa.BigInteger, sa.ForeignKey("genbank_region.id", ondelete="CASCADE"), nullable=True),
-
+        sa.Column(
+            "compound_id",
+            sa.BigInteger,
+            sa.ForeignKey("compound.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+        sa.Column(
+            "genbank_region_id",
+            sa.BigInteger,
+            sa.ForeignKey("genbank_region.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
         # flexible classification fields
         # examples:
         #   scheme: "taxonomy", key: "species", value: "Streptomyces coelicolor"
@@ -30,12 +40,20 @@ def upgrade():
         sa.Column("scheme", sa.String(64), nullable=False),
         sa.Column("key", sa.String(64), nullable=False),
         sa.Column("value", sa.String(256), nullable=False),
-
         # structured payload (for provenance, scores, ontology IDs, etc.)
         sa.Column("metadata_json", JSONB, nullable=True),
-
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("NOW()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("NOW()"),
+            nullable=False,
+        ),
         sa.CheckConstraint(
             "("
             "(compound_id IS NOT NULL AND genbank_region_id IS NULL) OR "
@@ -54,8 +72,12 @@ def upgrade():
 
     # helpful indexes for common lookups
     op.create_index("ix_annotation_compound_id", "annotation", ["compound_id"])
-    op.create_index("ix_annotation_genbank_region_id", "annotation", ["genbank_region_id"])
-    op.create_index("ix_annotation_scheme_key_value", "annotation", ["scheme", "key", "value"])
+    op.create_index(
+        "ix_annotation_genbank_region_id", "annotation", ["genbank_region_id"]
+    )
+    op.create_index(
+        "ix_annotation_scheme_key_value", "annotation", ["scheme", "key", "value"]
+    )
 
     # JSON metadata indexing (existence/path queries)
     op.execute("""
@@ -80,6 +102,7 @@ def upgrade():
     EXECUTE FUNCTION public.set_timestamp_annotation();
     """)
 
+
 def downgrade():
     # drop triggers and their functions first
     op.execute("DROP TRIGGER IF EXISTS annotation_set_timestamp ON public.annotation;")
@@ -92,7 +115,9 @@ def downgrade():
     op.drop_index("ix_annotation_scheme_key_value", table_name="annotation")
     op.drop_index("ix_annotation_genbank_region_id", table_name="annotation")
     op.drop_index("ix_annotation_compound_id", table_name="annotation")
-    op.drop_constraint("uq_annotation_target_scheme_key_value", "annotation", type_="unique")
+    op.drop_constraint(
+        "uq_annotation_target_scheme_key_value", "annotation", type_="unique"
+    )
 
     # drop table
     op.drop_table("annotation")

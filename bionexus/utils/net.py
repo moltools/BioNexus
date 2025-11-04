@@ -1,14 +1,39 @@
+"""Utility functions for downloading and extracting files safely."""
+
 from __future__ import annotations
-import re, sys, tarfile, zipfile, gzip, shutil
+import re
+import sys
+import tarfile
+import zipfile
+import gzip
+import shutil
 import logging
 from pathlib import Path
+
 from urllib.parse import urlparse
 from urllib.request import urlopen, Request
+
 from bionexus.config import default_cache_dir
+
 
 logger = logging.getLogger(__name__)
 
-def ensure_download(url: str, cache_dir: str | None = None, filename: str | None = None, force: bool = False) -> str:
+
+def ensure_download(
+    url: str,
+    cache_dir: str | None = None,
+    filename: str | None = None,
+    force: bool = False,
+) -> str:
+    """
+    Download a file from a URL to a cache directory if not already present.
+
+    :param url: the URL to download the file from
+    :param cache_dir: optional directory to use for caching downloads
+    :param filename: optional filename to save the downloaded file as
+    :param force: if True, re-download the file even if it exists in cache
+    :return: path to the downloaded (or cached) file
+    """
     cache = Path(cache_dir) if cache_dir else default_cache_dir()
     cache.mkdir(parents=True, exist_ok=True)
     name = filename or Path(urlparse(url).path).name
@@ -46,28 +71,49 @@ def ensure_download(url: str, cache_dir: str | None = None, filename: str | None
     logger.info(f"Finished downloading: {dst}")
     return str(dst)
 
+
 def _default_cache_dir() -> Path:
-    # use your existing default_cache_dir() if you have one
-    from bionexus.utils.net import default_cache_dir  # or adjust import
+    """
+    Get the default cache directory as a Path object.
+    """
+    from bionexus.utils.net import default_cache_dir
+
     return Path(default_cache_dir())
 
+
 def _safe_join(base: Path, *paths: str) -> Path:
+    """
+    Safely join one or more path components to a base path, preventing directory traversal.
+
+    :param base: the base directory
+    :param paths: additional path components to join
+    :return: the safely joined Path
+    :raises ValueError: if the resulting path is outside the base directory
+    """
     p = (base / Path(*paths)).resolve()
     base_resolved = base.resolve()
+
     if not str(p).startswith(str(base_resolved)):
         raise ValueError(f"Unsafe path detected: {p}")
+
     return p
 
+
 def _safe_extract_tar(t: tarfile.TarFile, outdir: Path) -> None:
+    """
+    Safely extract a tarfile to the specified output directory.
+
+    :param t: the opened tarfile object
+    :param outdir: the output directory to extract files into
+    """
     for m in t.getmembers():
-        # skip absolute paths and parent traversal
+        # Skip absolute paths and parent traversal
         if m.name.startswith("/") or ".." in Path(m.name).parts:
             continue
         target = _safe_join(outdir, m.name)
         if m.isdir():
             target.mkdir(parents=True, exist_ok=True)
         elif m.issym() or m.islnk():
-            # ignore links for safety; adapt if you need them
             continue
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -75,10 +121,17 @@ def _safe_extract_tar(t: tarfile.TarFile, outdir: Path) -> None:
                 if src is not None:
                     shutil.copyfileobj(src, dst)
 
+
 def _safe_extract_zip(z: zipfile.ZipFile, outdir: Path) -> None:
+    """
+    Safely extract a zipfile to the specified output directory.
+
+    :param z: the opened zipfile object
+    :param outdir: the output directory to extract files into
+    """
     for name in z.namelist():
         if name.endswith("/"):
-            # directory entry
+            # Directory entry
             d = _safe_join(outdir, name)
             d.mkdir(parents=True, exist_ok=True)
             continue
@@ -89,19 +142,37 @@ def _safe_extract_zip(z: zipfile.ZipFile, outdir: Path) -> None:
         with z.open(name) as src, open(target, "wb") as dst:
             shutil.copyfileobj(src, dst)
 
+
 def _base_for_outdir(p: Path) -> str:
+    """
+    Determine the base name for the output directory by stripping known archive suffixes.
+
+    :param p: the Path object representing the file
+    :return: the base name without archive suffixes
+    """
     name = p.name
-    # strip double/compound suffixes first
+
+    # Strip double/compound suffixes first
     for pat in (r"\.tar\.(gz|bz2|xz)$", r"\.t(gz|bz2|xz)$"):
         if re.search(pat, name, flags=re.IGNORECASE):
             return re.sub(pat, "", name, flags=re.IGNORECASE)
-    # simple single-suffix cases
+
+    # Simple single-suffix cases
     for suf in (".zip", ".gz", ".bz2", ".xz"):
         if name.lower().endswith(suf):
             return name[: -len(suf)]
+
     return p.stem
 
+
 def extract_if_needed(path: str, cache_dir: str | None = None) -> list[str]:
+    """
+    Extract an archive file if it is a supported format (zip, tar, gz).
+
+    :param path: path to the archive file
+    :param cache_dir: optional directory to use for extraction
+    :return: list of extracted file paths, or empty list if not an archive
+    """
     p = Path(path)
     outroot = Path(cache_dir) if cache_dir else _default_cache_dir()
     outdir = outroot / (f"{_base_for_outdir(p)}_extracted")
@@ -119,7 +190,7 @@ def extract_if_needed(path: str, cache_dir: str | None = None) -> list[str]:
 
     # TAR family
     if tarfile.is_tarfile(p):
-        # open with r:* to auto-detect compression
+        # Open with r:* to auto-detect compression
         with tarfile.open(p, mode="r:*") as t:
             members = [m.name for m in t.getmembers() if m.isfile()]
             _safe_extract_tar(t, outdir)
@@ -128,8 +199,10 @@ def extract_if_needed(path: str, cache_dir: str | None = None) -> list[str]:
 
     # Plain single-file .gz (NOT .tar.gz)
     name_lower = p.name.lower()
-    if name_lower.endswith(".gz") and not (name_lower.endswith(".tar.gz") or name_lower.endswith(".tgz")):
-        # write decompressed file into the outdir with the .gz stripped
+    if name_lower.endswith(".gz") and not (
+        name_lower.endswith(".tar.gz") or name_lower.endswith(".tgz")
+    ):
+        # Write decompressed file into the outdir with the .gz stripped
         out_file = outdir / _base_for_outdir(p)
         out_file.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(p, "rb") as src, open(out_file, "wb") as dst:
