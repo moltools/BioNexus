@@ -103,31 +103,6 @@
 
 Adminer: http://localhost:8080 (server: db, user: bionexus, db: bionexus)
 
-## Compound search
-
-Make sure to have installed the `chem` extras:
-
-```bash
-poetry install --extras chem
-```
-
-Exact search:
-
-```bash
-bionexus search-jaccard --smiles "CCO" --top-k 5
-```
-
-Exact search returns `top-k` results with lowest Jaccard distance (highest similarity). Hybrid search speeds up the process by using the `pgvector` extensions and the `<#>` operator (inner-product distance) to quickly find the 2000 nearest neighbors and then re-ranks these using the exact Jaccard distance.
-
-Hybrid search:
-```bash
-bionexus search-jaccard --smiles "CCO" --top-k 5 --hybrid   
-```
-
-<!-- ## Retrobiosynthetic search
-
-Not yet implemented -->
-
 ## Database schema & migrations
 
 The BioNexus database schema is defined in `bionexus/db/models.py` using SQLAlchemy ORM classes.  
@@ -171,8 +146,6 @@ Schema changes (new tables, columns, constraints, etc.) are tracked with **Alemb
    ```bash
    bionexus downgrade -1
    ```
-
----
 
 ### Tips
 
