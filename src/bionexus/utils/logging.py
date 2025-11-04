@@ -1,6 +1,7 @@
 """Utility functions for setting up logging in BioNexus."""
 
 from __future__ import annotations
+
 import logging
 
 from bionexus.config import DEFAULT_LOGGING_LVL

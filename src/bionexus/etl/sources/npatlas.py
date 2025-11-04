@@ -1,18 +1,18 @@
 """Load NPAtlas JSON data into the BioNexus database."""
 
 from __future__ import annotations
+
 import logging
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from tqdm import tqdm
 
-from bionexus.utils.io import iter_json
-from bionexus.etl.chemistry import get_atom_counts
 from bionexus.db.engine import SessionLocal
 from bionexus.db.models import Annotation, Compound, CompoundRecord
-
+from bionexus.etl.chemistry import get_atom_counts
+from bionexus.utils.io import iter_json
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +34,12 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
 
     # Collect annotations as dicts and upsert in bulk per chunk
     batch_ann_dicts: list[dict] = []  # each has {"_comp_obj", "scheme", "key", "value"}
-    pending_ann = (
-        0  # count staged annotations to trigger chunk commit even if only ann present
-    )
+    pending_ann = 0  # count staged annotations to trigger chunk commit even if only ann present
 
     # De-dedupe within this load (by inchikey and by (source, ext_id))
     seen_inchikey: set[str] = set()
     seen_record_key: set[tuple[str, str]] = set()
-    seen_annotation_key: set[tuple[str, str, str, str]] = (
-        set()
-    )  # (inchikey, scheme, key, value)
+    seen_annotation_key: set[tuple[str, str, str, str]] = set()  # (inchikey, scheme, key, value)
 
     with SessionLocal() as s:
         for d in tqdm(iter_json(path), desc="Loading NPAtlas"):
@@ -66,23 +62,15 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
             organism_genus = tax["genus"]
             organism_species_name = tax["species"]
             organism_species = (
-                f"{organism_genus} {organism_species_name}"
-                if organism_genus and organism_species_name
-                else None
+                f"{organism_genus} {organism_species_name}" if organism_genus and organism_species_name else None
             )
 
             npclassifier = d.get("npclassifier", None)
             if npclassifier:
-                npclassifier_isglycoside: bool | None = npclassifier.get(
-                    "isglycoside", None
-                )
+                npclassifier_isglycoside: bool | None = npclassifier.get("isglycoside", None)
                 npclassifier_class: list[str] = npclassifier.get("class_results", [])
-                npclassifier_pathway: list[str] = npclassifier.get(
-                    "pathway_results", []
-                )
-                npclassifier_superclass: list[str] = npclassifier.get(
-                    "superclass_results", []
-                )
+                npclassifier_pathway: list[str] = npclassifier.get("pathway_results", [])
+                npclassifier_superclass: list[str] = npclassifier.get("superclass_results", [])
 
             # Must have an inchikey to unify; skip if missing
             if not inchikey:
@@ -98,16 +86,12 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
             atom_counts = get_atom_counts(smiles)
 
             # 1) Find or create canonical compound by inchikey
-            comp = s.scalars(
-                select(Compound).where(Compound.inchikey == inchikey)
-            ).first()
+            comp = s.scalars(select(Compound).where(Compound.inchikey == inchikey)).first()
             if not comp:
                 # Also avoid creating the same compound twice in one batch before flush
                 if inchikey in seen_inchikey:
                     # If we have already staged it in this batch, fetch it from batch list
-                    comp = next(
-                        (c for c in batch_compounds if c.inchikey == inchikey), None
-                    )
+                    comp = next((c for c in batch_compounds if c.inchikey == inchikey), None)
                 if not comp:
                     comp = Compound(
                         inchikey=inchikey,
@@ -148,9 +132,7 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
 
             # 2) Ensure a CompoundRecord (unique on source+ext_id)
             rec_exists = s.scalars(
-                select(CompoundRecord).where(
-                    CompoundRecord.source == "npatlas", CompoundRecord.ext_id == npaid
-                )
+                select(CompoundRecord).where(CompoundRecord.source == "npatlas", CompoundRecord.ext_id == npaid)
             ).first()
             if not rec_exists:
                 # If comp is new and not flushed yet, SQLA will link after add_all
@@ -231,9 +213,7 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
                             stmt = (
                                 insert(Annotation)
                                 .values(ann_values)
-                                .on_conflict_do_nothing(
-                                    constraint="uq_annotation_target_scheme_key_value"
-                                )
+                                .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
                                 .returning(Annotation.id)
                             )
                             inserted_ids = s.execute(stmt).scalars().all()
@@ -279,9 +259,7 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
                         stmt = (
                             insert(Annotation)
                             .values(ann_values)
-                            .on_conflict_do_nothing(
-                                constraint="uq_annotation_target_scheme_key_value"
-                            )
+                            .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
                             .returning(Annotation.id)
                         )
                         inserted_ids = s.execute(stmt).scalars().all()

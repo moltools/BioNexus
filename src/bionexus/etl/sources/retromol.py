@@ -1,23 +1,23 @@
 """Module for parsing compounds using RetroMol."""
 
 from __future__ import annotations
-from typing import List, Dict, Any
-import os
+
 import hashlib
 import logging
+import os
 import shutil
 import subprocess
-from pathlib import Path
 from importlib.resources import files
+from pathlib import Path
+from typing import Any
 
-from tqdm import tqdm
-from sqlalchemy import select, and_, literal, exists, literal_column
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import and_, exists, literal, literal_column, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
+from tqdm import tqdm
 
-from bionexus.db.models import Compound, Ruleset, RetroMolCompound
 from bionexus.db.engine import SessionLocal
-
+from bionexus.db.models import Compound, RetroMolCompound, Ruleset
 
 logger = logging.getLogger(__name__)
 
@@ -58,17 +58,13 @@ def parse_compounds_with_retromol(
         if shutil.which("retromol") is None:
             raise ImportError("retromol command line tool not found in PATH")
     except ImportError:
-        logger.error(
-            "retromol package or command line tool not found. Please install retromol."
-        )
+        logger.error("retromol package or command line tool not found. Please install retromol.")
         return -1
 
     # Limit number of workers to at least one, and 1 below number of CPU cores
     max_workers = max(1, os.cpu_count() - 1)
     workers = min(max(1, workers), max_workers)
-    logger.info(
-        f"Using {workers} parallel workers for RetroMol processing (max available: {max_workers})"
-    )
+    logger.info(f"Using {workers} parallel workers for RetroMol processing (max available: {max_workers})")
 
     # Ensure cache_dir exists
     cache_dir = Path(cache_dir)
@@ -110,9 +106,7 @@ def parse_compounds_with_retromol(
         ruleset_id = ruleset.id
 
         # Build query of compounds to process
-        base_q = select(Compound.id, Compound.smiles).where(
-            Compound.smiles.is_not(None)
-        )
+        base_q = select(Compound.id, Compound.smiles).where(Compound.smiles.is_not(None))
 
         if recompute:
             q = base_q
@@ -147,9 +141,7 @@ def parse_compounds_with_retromol(
     results_path = cache_dir.joinpath("results.jsonl")
     if recompute and results_path.exists():
         results_path.unlink()
-        logger.info(
-            f"Deleted existing results file at {results_path} due to recompute=True"
-        )
+        logger.info(f"Deleted existing results file at {results_path} due to recompute=True")
 
     if not results_path.exists():
         # Run RetroMol on compounds
@@ -185,7 +177,7 @@ def parse_compounds_with_retromol(
     n_inserted_total = 0
     n_updated_total = 0
 
-    def flush_chunk(session, payload: List[Dict[str, Any]]) -> tuple[int, int]:
+    def flush_chunk(session, payload: list[dict[str, Any]]) -> tuple[int, int]:
         """
         Flush a chunk of results to the database using an upsert operation.
 
@@ -211,9 +203,7 @@ def parse_compounds_with_retromol(
         return (ins, upd)
 
     with SessionLocal() as s:
-        for rec in tqdm(
-            iter_json(results_path, jsonl=True), desc="Loading RetroMol results"
-        ):
+        for rec in tqdm(iter_json(results_path, jsonl=True), desc="Loading RetroMol results"):
             n_seen += 1
 
             # Basic validation
@@ -263,8 +253,6 @@ def parse_compounds_with_retromol(
             finally:
                 to_upsert.clear()
 
-    logger.info(
-        f"Inserted {n_inserted_total} new RetroMol results, updated {n_updated_total} existing results"
-    )
+    logger.info(f"Inserted {n_inserted_total} new RetroMol results, updated {n_updated_total} existing results")
 
     return n_inserted_total

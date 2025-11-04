@@ -4,8 +4,9 @@ Revises: 0001_init
 Create Date: 2025-10-10 21:56:15.797293
 """
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "0002_rev"
 down_revision = "0001_init"
@@ -21,9 +22,7 @@ def upgrade():
         sa.Column("ext_id", sa.String(128), nullable=False),
         sa.Column("gbk_text", sa.Text, nullable=False),  # full GenBank as TEXT
         sa.Column("size_bytes", sa.Integer, nullable=True),  # raw size on ingest
-        sa.Column(
-            "sha256", sa.String(64), nullable=True
-        ),  # content checksum for dedup/integrity
+        sa.Column("sha256", sa.String(64), nullable=True),  # content checksum for dedup/integrity
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -72,9 +71,7 @@ def upgrade():
 
 def downgrade():
     # drop trigger and its function first
-    op.execute(
-        "DROP TRIGGER IF EXISTS genbank_region_set_timestamp ON public.genbank_region;"
-    )
+    op.execute("DROP TRIGGER IF EXISTS genbank_region_set_timestamp ON public.genbank_region;")
     op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_genbank_region;")
 
     # drop optional partial unique index (if created)

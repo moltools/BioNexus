@@ -4,9 +4,10 @@ Revises: 0002_rev
 Create Date: 2025-10-11 10:32:00.000000
 """
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
+
+from alembic import op
 
 revision = "0003_rev"
 down_revision = "0002_rev"
@@ -72,12 +73,8 @@ def upgrade():
 
     # helpful indexes for common lookups
     op.create_index("ix_annotation_compound_id", "annotation", ["compound_id"])
-    op.create_index(
-        "ix_annotation_genbank_region_id", "annotation", ["genbank_region_id"]
-    )
-    op.create_index(
-        "ix_annotation_scheme_key_value", "annotation", ["scheme", "key", "value"]
-    )
+    op.create_index("ix_annotation_genbank_region_id", "annotation", ["genbank_region_id"])
+    op.create_index("ix_annotation_scheme_key_value", "annotation", ["scheme", "key", "value"])
 
     # JSON metadata indexing (existence/path queries)
     op.execute("""
@@ -115,9 +112,7 @@ def downgrade():
     op.drop_index("ix_annotation_scheme_key_value", table_name="annotation")
     op.drop_index("ix_annotation_genbank_region_id", table_name="annotation")
     op.drop_index("ix_annotation_compound_id", table_name="annotation")
-    op.drop_constraint(
-        "uq_annotation_target_scheme_key_value", "annotation", type_="unique"
-    )
+    op.drop_constraint("uq_annotation_target_scheme_key_value", "annotation", type_="unique")
 
     # drop table
     op.drop_table("annotation")

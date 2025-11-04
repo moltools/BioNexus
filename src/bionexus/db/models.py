@@ -1,27 +1,28 @@
 """Database models for BioNexus."""
 
 from __future__ import annotations
+
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
-    Integer,
     BigInteger,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
+    Index,
+    Integer,
     SmallInteger,
     String,
     Text,
-    CheckConstraint,
     UniqueConstraint,
-    Index,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import BIT, JSONB
-from pgvector.sqlalchemy import Vector
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -78,16 +79,14 @@ class Compound(Base):
     #   for rec in comp.records:
     #       print(rec.source, rec.ext_id)
     #
-    records: Mapped[list["CompoundRecord"]] = relationship(
-        back_populates="compound", cascade="all, delete-orphan"
-    )
+    records: Mapped[list[CompoundRecord]] = relationship(back_populates="compound", cascade="all, delete-orphan")
     # allows to navigate from compound to annotations like:
     #
     #   comp = s.get(Compound, 123)
     #   for ann in comp.annotations:
     #       print(ann.scheme, ann.key, ann.value)
     #
-    annotations: Mapped[list["Annotation"]] = relationship(
+    annotations: Mapped[list[Annotation]] = relationship(
         back_populates="compound", passive_deletes=True
     )  # no delete-orphan because FK is nullable by design
 
@@ -102,16 +101,14 @@ class CompoundRecord(Base):
     __tablename__ = "compound_record"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
-    compound_id: Mapped[int] = mapped_column(
-        ForeignKey("compound.id", ondelete="CASCADE"), index=True
-    )
+    compound_id: Mapped[int] = mapped_column(ForeignKey("compound.id", ondelete="CASCADE"), index=True)
 
     source: Mapped[str] = mapped_column(String(32))
     ext_id: Mapped[str] = mapped_column(String(128))
     name: Mapped[str | None] = mapped_column(String(512))
     synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String))
 
-    compound: Mapped["Compound"] = relationship(back_populates="records")
+    compound: Mapped[Compound] = relationship(back_populates="records")
 
     # Allow same (source, ext_id) to link to multiple compounds
     __table_args__ = (
@@ -140,12 +137,8 @@ class GenBankRegion(Base):
     size_bytes: Mapped[int | None] = mapped_column()  # raw size on ingest
     sha256: Mapped[str | None] = mapped_column(String(64))  # content checksum
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
 
     # Backrefs:
     # allows to navigate from region to annotations like:
@@ -154,7 +147,7 @@ class GenBankRegion(Base):
     #   for ann in region.annotations:
     #       print(ann.scheme, ann.key, ann.value)
     #
-    annotations: Mapped[list["Annotation"]] = relationship(
+    annotations: Mapped[list[Annotation]] = relationship(
         back_populates="genbank_region", passive_deletes=True
     )  # no delete-orphan because FK is nullable by design
 
@@ -181,9 +174,7 @@ class Annotation(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
     # Exactly one of these must be non-null (enforced via CHECK)
-    compound_id: Mapped[int | None] = mapped_column(
-        ForeignKey("compound.id", ondelete="CASCADE"), index=True
-    )
+    compound_id: Mapped[int | None] = mapped_column(ForeignKey("compound.id", ondelete="CASCADE"), index=True)
     genbank_region_id: Mapped[int | None] = mapped_column(
         ForeignKey("genbank_region.id", ondelete="CASCADE"), index=True
     )
@@ -196,18 +187,12 @@ class Annotation(Base):
     # Optional structured payload
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
 
     # Relationship (no delete-orphan because FK is nullable be design)
-    compound: Mapped["Compound | None"] = relationship(back_populates="annotations")
-    genbank_region: Mapped["GenBankRegion | None"] = relationship(
-        back_populates="annotations"
-    )
+    compound: Mapped[Compound | None] = relationship(back_populates="annotations")
+    genbank_region: Mapped[GenBankRegion | None] = relationship(back_populates="annotations")
 
     __table_args__ = (
         # Enforce exactly one target
@@ -245,26 +230,16 @@ class Ruleset(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
 
     matching_rules_yaml: Mapped[str] = mapped_column(Text, nullable=False)
-    matching_rules_sha256: Mapped[str] = mapped_column(
-        String(64), nullable=False, unique=True
-    )
+    matching_rules_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     reaction_rules_yaml: Mapped[str] = mapped_column(Text, nullable=False)
-    reaction_rules_sha256: Mapped[str] = mapped_column(
-        String(64), nullable=False, unique=True
-    )
+    reaction_rules_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     ruleset_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
 
     # Backref to results
-    results: Mapped[list["RetroMolCompound"]] = relationship(
-        back_populates="ruleset", cascade="all, delete-orphan"
-    )
+    results: Mapped[list[RetroMolCompound]] = relationship(back_populates="ruleset", cascade="all, delete-orphan")
 
     __table_args__ = (Index("ix_ruleset_version", "version", unique=True),)
 
@@ -277,25 +252,17 @@ class RetroMolCompound(Base):
     __tablename__ = "retromol_compound"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    compound_id: Mapped[int] = mapped_column(
-        ForeignKey("compound.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    ruleset_id: Mapped[int] = mapped_column(
-        ForeignKey("ruleset.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
+    compound_id: Mapped[int] = mapped_column(ForeignKey("compound.id", ondelete="CASCADE"), nullable=False, index=True)
+    ruleset_id: Mapped[int] = mapped_column(ForeignKey("ruleset.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     result_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     fp_retro: Mapped[str | None] = mapped_column(BIT(512))
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("NOW()"), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
 
-    compound: Mapped["Compound"] = relationship(back_populates="retromol_results")
-    ruleset: Mapped["Ruleset"] = relationship(back_populates="results")
+    compound: Mapped[Compound] = relationship(back_populates="retromol_results")
+    ruleset: Mapped[Ruleset] = relationship(back_populates="results")
 
     __table_args__ = (
         Index("ix_retromol_compound_compound_id", "compound_id"),

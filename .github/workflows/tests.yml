@@ -23,18 +23,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
 
-      - name: install Poetry
+      - name: install package with dev dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "poetry>=1.8.0,<2.0.0"
-
-      - name: install project (incl. dev group)
-        run: |
-          poetry install --with dev
+          pip install -e .[dev]
 
       - name: ruff lint
-        run: poetry run ruff check alembic bionexus
+        run: ruff check alembic src
 
       - name: ruff format check
-        run: poetry run ruff format --check alembic bionexus
+        run: ruff format --check alembic src

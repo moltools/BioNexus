@@ -1,9 +1,11 @@
 """Utility functions for file I/O operations, including handling gzip files and iterating over JSON items."""
 
 from __future__ import annotations
-from typing import Generator, IO
 
 import gzip
+from collections.abc import Generator
+from typing import IO
+
 import ijson
 
 
@@ -30,4 +32,4 @@ def iter_json(path: str) -> Generator[dict, None, None]:
     """
     with open(path, "rb") as f:
         for item in ijson.items(f, "item"):
-            yield item
+            yield from item

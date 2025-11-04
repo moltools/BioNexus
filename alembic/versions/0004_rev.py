@@ -4,9 +4,10 @@ Revises: 0003_rev
 Create Date: 2025-10-14 12:25:00.000000
 """
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import BIT, JSONB
+
+from alembic import op
 
 revision = "0004_rev"
 down_revision = "0003_rev"
@@ -23,9 +24,7 @@ def upgrade():
     op.create_table(
         "ruleset",
         sa.Column("id", sa.BigInteger, primary_key=True),
-        sa.Column(
-            "version", sa.Integer, nullable=False, unique=True
-        ),  # auto-assign by trigger
+        sa.Column("version", sa.Integer, nullable=False, unique=True),  # auto-assign by trigger
         # store rules as text (YAML) for both monomers and reaction rules, also store sha256 for integrity
         sa.Column("matching_rules_yaml", sa.Text, nullable=False),
         sa.Column("matching_rules_sha256", sa.String(64), nullable=False, unique=True),
@@ -206,9 +205,7 @@ def upgrade():
 
 def downgrade():
     # drop child triggers/indexes/tables first
-    op.execute(
-        "DROP TRIGGER IF EXISTS retromol_compound_set_timestamp ON public.retromol_compound;"
-    )
+    op.execute("DROP TRIGGER IF EXISTS retromol_compound_set_timestamp ON public.retromol_compound;")
     op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_retromol_compound;")
     op.drop_index("ix_retromol_compound_ruleset_id", table_name="retromol_compound")
     op.drop_index("ix_retromol_compound_compound_id", table_name="retromol_compound")

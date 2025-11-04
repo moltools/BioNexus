@@ -1,31 +1,31 @@
 """ETL functions for MIBiG data source: downloading GBK files and loading JSON/GBK data into the database."""
 
 from __future__ import annotations
-import json
-import hashlib
-import logging
-import re
-import random
 
 import asyncio
+import hashlib
+import json
+import logging
+import random
+import re
+from pathlib import Path
+
 import aiohttp
 from aiohttp import (
-    ClientResponseError,
     ClientConnectorError,
     ClientOSError,
     ClientPayloadError,
+    ClientResponseError,
 )
-from pathlib import Path
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from tqdm import tqdm
 
 from bionexus.config import DEFAULT_MAX_BYTES_GBK
-from bionexus.etl.chemistry import get_atom_counts, smiles_to_inchikey
 from bionexus.db.engine import SessionLocal
 from bionexus.db.models import Annotation, Compound, CompoundRecord, GenBankRegion
-
+from bionexus.etl.chemistry import get_atom_counts, smiles_to_inchikey
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ def _read_gbk_text(path: str) -> str:
     :param path: path to GenBank file
     :return: file content as string
     """
-    with open(path, "rt", encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         return fh.read()
 
 
@@ -264,20 +264,14 @@ def load_mibig_files(
     batch_regions: list[GenBankRegion] = []
 
     # Collect annotations as dicts and upsert in bulk per chunk
-    batch_ann_dicts: list[
-        dict
-    ] = []  # each has {"_comp_obj"/"_gbk_obj", "scheme", "key", "value"}
-    pending_ann = (
-        0  # count staged annotations to trigger chunk commit even if only ann present
-    )
+    batch_ann_dicts: list[dict] = []  # each has {"_comp_obj"/"_gbk_obj", "scheme", "key", "value"}
+    pending_ann = 0  # count staged annotations to trigger chunk commit even if only ann present
 
     # De-dupe within this load (by inchikey and by (inchikey, source, ext_id) pre-flush)
     seen_inchikey: set[str] = set()
     seen_record_key: set[tuple[str, str, str]] = set()  # (inchikey, source, ext_id)
     seen_region_key: set[str] = set()  # (sha256)
-    seen_annotation_key: set[tuple[str, str, str, str]] = (
-        set()
-    )  # (inchikey/sha256, scheme, key, value)
+    seen_annotation_key: set[tuple[str, str, str, str]] = set()  # (inchikey/sha256, scheme, key, value)
 
     with SessionLocal() as s:
         # Compounds from JSON files
@@ -305,9 +299,7 @@ def load_mibig_files(
                     atom_counts = get_atom_counts(smiles)
 
                     # 1) Find or stage canonical compound by inchikey
-                    comp = s.scalars(
-                        select(Compound).where(Compound.inchikey == inchikey)
-                    ).first()
+                    comp = s.scalars(select(Compound).where(Compound.inchikey == inchikey)).first()
                     if not comp:
                         # Also avoid creating the same compound twice in one batch before flush
                         if inchikey in seen_inchikey:
@@ -350,8 +342,7 @@ def load_mibig_files(
                         seen_record_key.add(rk)
                         rec_exists = s.scalars(
                             select(CompoundRecord).where(
-                                CompoundRecord.compound_id
-                                == comp.id,  # None for new; query will skip
+                                CompoundRecord.compound_id == comp.id,  # None for new; query will skip
                                 CompoundRecord.source == source,
                                 CompoundRecord.ext_id == ext_id,
                             )
@@ -369,12 +360,7 @@ def load_mibig_files(
                             new_records += 1
 
                     # Flush if batch full
-                    if (
-                        len(batch_compounds)
-                        + len(batch_records)
-                        + len(batch_regions)
-                        + pending_ann
-                    ) >= chunk_size:
+                    if (len(batch_compounds) + len(batch_records) + len(batch_regions) + pending_ann) >= chunk_size:
                         try:
                             if batch_compounds:
                                 s.add_all(batch_compounds)
@@ -437,22 +423,16 @@ def load_mibig_files(
 
             # Skip if too large
             if size_bytes > DEFAULT_MAX_BYTES_GBK:
-                logger.warning(
-                    f"Skipping MIBiG GenBank {ext_id} due to size {size_bytes} > {DEFAULT_MAX_BYTES_GBK}"
-                )
+                logger.warning(f"Skipping MIBiG GenBank {ext_id} due to size {size_bytes} > {DEFAULT_MAX_BYTES_GBK}")
                 continue
 
             # 1) Find or create GenBankRegion by sha256
-            region = s.scalars(
-                select(GenBankRegion).where(GenBankRegion.sha256 == sha256)
-            ).first()
+            region = s.scalars(select(GenBankRegion).where(GenBankRegion.sha256 == sha256)).first()
             if not region:
                 # Also avoid creating same region twice in one batch before flush
                 if sha256 in seen_region_key:
                     # If we have already staged in this batch, fetch it from batch list
-                    region = next(
-                        (r for r in batch_regions if r.sha256 == sha256), None
-                    )
+                    region = next((r for r in batch_regions if r.sha256 == sha256), None)
                 if not region:
                     region = GenBankRegion(
                         source=source,
@@ -495,12 +475,7 @@ def load_mibig_files(
                 pending_ann += 1
 
             # Flush if batch full
-            if (
-                len(batch_compounds)
-                + len(batch_records)
-                + len(batch_regions)
-                + pending_ann
-            ) >= chunk_size:
+            if (len(batch_compounds) + len(batch_records) + len(batch_regions) + pending_ann) >= chunk_size:
                 try:
                     if batch_compounds:
                         s.add_all(batch_compounds)
@@ -526,9 +501,7 @@ def load_mibig_files(
                             stmt = (
                                 insert(Annotation)
                                 .values(ann_values)
-                                .on_conflict_do_nothing(
-                                    constraint="uq_annotation_target_scheme_key_value"
-                                )
+                                .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
                                 .returning(Annotation.id)
                             )
                             inserted_ids = s.execute(stmt).scalars().all()
@@ -578,9 +551,7 @@ def load_mibig_files(
                         stmt = (
                             insert(Annotation)
                             .values(ann_values)
-                            .on_conflict_do_nothing(
-                                constraint="uq_annotation_target_scheme_key_value"
-                            )
+                            .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
                             .returning(Annotation.id)
                         )
                         inserted_ids = s.execute(stmt).scalars().all()

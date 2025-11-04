@@ -1,7 +1,8 @@
-from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import ARRAY, BIT
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import ARRAY, BIT
+
+from alembic import op
 
 revision = "0001_init"
 down_revision = None
@@ -10,9 +11,7 @@ depends_on = None
 
 
 def upgrade():
-    op.execute(
-        "CREATE EXTENSION IF NOT EXISTS vector;"
-    )  # pgvector for fp_morgan_b2048_r2_vec
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")  # pgvector for fp_morgan_b2048_r2_vec
 
     op.create_table(
         "compound",
@@ -87,9 +86,7 @@ def upgrade():
         "compound_record",
         ["compound_id", "source", "ext_id"],
     )
-    op.create_index(
-        "ix_compound_record_compound_id", "compound_record", ["compound_id"]
-    )
+    op.create_index("ix_compound_record_compound_id", "compound_record", ["compound_id"])
     # speed lookups by accession
     op.create_index(
         "ix_compound_record_source_ext",
@@ -136,18 +133,14 @@ def upgrade():
 def downgrade():
     # drop in reverse order
     # drop triggers/functions first (otherwise DROP TABLE will drop dependent objs, but be explicit)
-    op.execute(
-        "DROP TRIGGER IF EXISTS compound_record_set_timestamp ON public.compound_record;"
-    )
+    op.execute("DROP TRIGGER IF EXISTS compound_record_set_timestamp ON public.compound_record;")
     op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_compound_record;")
     op.execute("DROP TRIGGER IF EXISTS compound_set_timestamp ON public.compound;")
     op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_compound;")
 
     op.drop_index("ix_compound_record_source_ext", table_name="compound_record")
     op.drop_index("ix_compound_record_compound_id", table_name="compound_record")
-    op.drop_constraint(
-        "uq_compound_record_compound_source_ext", "compound_record", type_="unique"
-    )
+    op.drop_constraint("uq_compound_record_compound_source_ext", "compound_record", type_="unique")
     op.drop_table("compound_record")
 
     op.drop_constraint("uq_compound_inchikey", "compound", type_="unique")

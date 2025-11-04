@@ -1,14 +1,14 @@
 """Module for chemistry-related tasks, such as fingerprint computation and InChIKey conversion."""
 
 from __future__ import annotations
+
 import logging
 
-from sqlalchemy import select, or_
+from sqlalchemy import or_, select
 from tqdm import tqdm
 
 from bionexus.db.engine import SessionLocal
 from bionexus.db.models import Compound
-
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,7 @@ def get_atom_counts(smiles: str) -> dict[str, int] | None:
         m = Chem.MolFromSmiles(smiles)
         if not m:
             return None
-        atom_counts = {
-            el: 0 for el in ["C", "H", "N", "O", "S", "P", "F", "Cl", "Br", "I"]
-        }
+        atom_counts = {el: 0 for el in ["C", "H", "N", "O", "S", "P", "F", "Cl", "Br", "I"]}
         for atom in m.GetAtoms():
             symbol = atom.GetSymbol()
             if symbol in atom_counts:
@@ -102,9 +100,7 @@ def _morgan_bits_and_vec(
         return None, None, None
 
 
-def backfill_fingerprints(
-    batch: int = 1000, recompute: bool = False, radius: int = 2, nbits: int = 2048
-) -> int:
+def backfill_fingerprints(batch: int = 1000, recompute: bool = False, radius: int = 2, nbits: int = 2048) -> int:
     """
     Compute Morgan(2048, r=2) fingerprints for compounds with SMILES.
     If recompute=True, overwrite all fingerprints.
@@ -138,9 +134,7 @@ def backfill_fingerprints(
                 break
 
             for c in tqdm(rows, desc="Computing fingerprints"):
-                bits, pop, vec = _morgan_bits_and_vec(
-                    c.smiles, radius=radius, nbits=nbits
-                )
+                bits, pop, vec = _morgan_bits_and_vec(c.smiles, radius=radius, nbits=nbits)
                 c.fp_morgan_b2048_r2_bit = bits
                 c.fp_morgan_b2048_r2_pop = pop
                 c.fp_morgan_b2048_r2_vec = vec

@@ -1,21 +1,21 @@
 """NPClassifier annotation source for BioNexus ETL."""
 
 from __future__ import annotations
-import logging
-import json
-import random
-from typing import Any, Optional
 
 import asyncio
+import json
+import logging
+import random
+from typing import Any
+
 import aiohttp
-from tqdm import tqdm
-from sqlalchemy import select, delete
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
+from tqdm import tqdm
 
-from bionexus.db.models import Compound, Annotation
 from bionexus.db.engine import SessionLocal
-
+from bionexus.db.models import Annotation, Compound
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +68,9 @@ async def _fetch_one(
     *,
     timeout_s: int = 10,
     retries: int = 3,
-    delay_between: Optional[float] = None,
-    semaphore: Optional[asyncio.Semaphore] = None,
-) -> Optional[dict[str, Any]]:
+    delay_between: float | None = None,
+    semaphore: asyncio.Semaphore | None = None,
+) -> dict[str, Any] | None:
     """
     Fetch NPClassifier result for a single SMILES string with retries.
 
@@ -87,7 +87,7 @@ async def _fetch_one(
         if delay_between:
             await asyncio.sleep(delay_between)
 
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         backoff = 0.5
 
         for attempt in range(retries + 1):
@@ -116,19 +116,13 @@ async def _fetch_one(
                                     pass  # fall through to retry
 
                             # Got HTML (likely rate-limit or WAF). Retry.
-                            logger.debug(
-                                f"Non-JSON 200 from {base}: {ctype}; first 120 chars: {text[:120]!r}"
-                            )
+                            logger.debug(f"Non-JSON 200 from {base}: {ctype}; first 120 chars: {text[:120]!r}")
 
                         # Explicit backoff cases
                         if status == 429:
                             # Respect Retry-After if present
                             ra = resp.headers.get("Retry-After")
-                            wait = (
-                                float(ra)
-                                if ra and ra.isdigit()
-                                else backoff * (1 + random.random())
-                            )
+                            wait = float(ra) if ra and ra.isdigit() else backoff * (1 + random.random())
                             await asyncio.sleep(wait)
                             continue  # try again (same base)
 
@@ -139,9 +133,7 @@ async def _fetch_one(
 
                         if 400 <= status < 500:
                             # Bad request (not retryable except maybe 429 handled above)
-                            logger.warning(
-                                f"4xx for SMILES (no retry): {status} :: {smiles}"
-                            )
+                            logger.warning(f"4xx for SMILES (no retry): {status} :: {smiles}")
                             return None
 
                 except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -155,9 +147,7 @@ async def _fetch_one(
                 backoff *= 2
             else:
                 if last_err:
-                    logger.error(
-                        f"Giving up on SMILES after retries: {smiles} :: {last_err}"
-                    )
+                    logger.error(f"Giving up on SMILES after retries: {smiles} :: {last_err}")
                 return None
 
 
@@ -165,11 +155,11 @@ async def _fetch_many(
     items: list[tuple[int, str]],  # (compound_id, smiles)
     *,
     concurrency: int = 16,
-    rate_per_sec: Optional[float] = 10.0,
+    rate_per_sec: float | None = 10.0,
     timeout_s: int = 10,
     retries: int = 3,
-    pbar: Optional[tqdm] = None,
-) -> dict[int, Optional[dict[str, Any]]]:
+    pbar: tqdm | None = None,
+) -> dict[int, dict[str, Any] | None]:
     """
     Concurrently fetch NPClassifier results for multiple SMILES strings.
 
@@ -193,11 +183,9 @@ async def _fetch_many(
         enable_cleanup_closed=True,
     )
 
-    results: dict[int, Optional[dict[str, Any]]] = {}
+    results: dict[int, dict[str, Any] | None] = {}
 
-    async with aiohttp.ClientSession(
-        timeout=timeout, connector=connector, headers=DEFAULT_HEADERS
-    ) as sess:
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=DEFAULT_HEADERS) as sess:
 
         async def run_one(comp_id: int, smi: str):
             res = await _fetch_one(
@@ -224,7 +212,7 @@ def annotate_with_npclassifier(
     *,
     chunk_size: int = 5000,
     concurrency: int = 8,
-    rate_per_sec: Optional[float] = 10.0,
+    rate_per_sec: float | None = 10.0,
     timeout_s: int = 10,
     retries: int = 3,
 ) -> int:
@@ -247,22 +235,15 @@ def annotate_with_npclassifier(
             # Subquery: does an npclassifier annotation exist for this compound?
             npclass_exists = (
                 select(1)
-                .where(
-                    (Annotation.compound_id == Compound.id)
-                    & (Annotation.scheme == "npclassifier")
-                )
+                .where((Annotation.compound_id == Compound.id) & (Annotation.scheme == "npclassifier"))
                 .exists()
             )
             # IDs that DO NOT have npclassifier yet
             comp_ids = s.scalars(select(Compound.id).where(~npclass_exists)).all()
-            logger.info(
-                f"Found {len(comp_ids)} compounds without NPClassifier annotations"
-            )
+            logger.info(f"Found {len(comp_ids)} compounds without NPClassifier annotations")
         else:
             comp_ids = s.scalars(select(Compound.id)).all()
-            logger.info(
-                f"Recomputing NPClassifier annotations for all {len(comp_ids)} compounds"
-            )
+            logger.info(f"Recomputing NPClassifier annotations for all {len(comp_ids)} compounds")
 
     if not comp_ids:
         logger.info("No compounds to annotate.")
@@ -276,9 +257,7 @@ def annotate_with_npclassifier(
 
             # Fetch the compounds for this chunk (id + smiles)
             with SessionLocal() as s:
-                comps: list[Compound] = s.scalars(
-                    select(Compound).where(Compound.id.in_(chunk_ids))
-                ).all()
+                comps: list[Compound] = s.scalars(select(Compound).where(Compound.id.in_(chunk_ids))).all()
 
                 # Optionally delete existing annotations if recompute
                 if recompute and comps:
@@ -290,9 +269,7 @@ def annotate_with_npclassifier(
                     )
                     s.commit()
 
-                pairs: list[tuple[int, str]] = [
-                    (c.id, c.smiles) for c in comps if c.smiles
-                ]
+                pairs: list[tuple[int, str]] = [(c.id, c.smiles) for c in comps if c.smiles]
 
             if not pairs:
                 pbar.update(len(chunk_ids))  # all missing SMILES; advance bar
@@ -332,9 +309,7 @@ def annotate_with_npclassifier(
                     stmt = (
                         insert(Annotation)
                         .values(rows_to_insert)
-                        .on_conflict_do_nothing(
-                            constraint="uq_annotation_target_scheme_key_value"
-                        )
+                        .on_conflict_do_nothing(constraint="uq_annotation_target_scheme_key_value")
                     )
                     res = s.execute(stmt)
                     s.commit()
@@ -344,9 +319,7 @@ def annotate_with_npclassifier(
                         # Fallback heuristic when rowcount unavailable
                         inserted = len(rows_to_insert)
                     total_inserted += inserted
-                    logger.info(
-                        f"Chunk {start//chunk_size + 1}: attempted {len(rows_to_insert)} inserts"
-                    )
+                    logger.info(f"Chunk {start // chunk_size + 1}: attempted {len(rows_to_insert)} inserts")
             except SQLAlchemyError as e:
                 logger.exception(f"DB error on chunk {start}-{end}: {e}")
                 # Continue to next chunk but do not lose progress bar state

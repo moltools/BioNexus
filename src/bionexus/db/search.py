@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import text, bindparam
-from sqlalchemy.dialects.postgresql import BIT
 from pgvector.sqlalchemy import Vector
+from sqlalchemy import bindparam, text
+from sqlalchemy.dialects.postgresql import BIT
 
 from bionexus.db.engine import SessionLocal
 
@@ -51,9 +51,7 @@ def jaccard_search_exact(bitstr: str, top_k: int = 50) -> list[dict]:
         return rows
 
 
-def jaccard_search_hybrid(
-    bitstr: str, qvec: list[float], top_k: int = 50, cand_k: int = 2000
-) -> list[dict]:
+def jaccard_search_hybrid(bitstr: str, qvec: list[float], top_k: int = 50, cand_k: int = 2000) -> list[dict]:
     """
     Perform a hybrid Jaccard similarity search on compound fingerprints using an initial
     candidate selection based on vector similarity.
@@ -109,8 +107,4 @@ def jaccard_search_hybrid(
     )
 
     with SessionLocal() as s:
-        return (
-            s.execute(sql, {"qb": bitstr, "qv": qvec, "k": top_k, "cand_k": cand_k})
-            .mappings()
-            .all()
-        )
+        return s.execute(sql, {"qb": bitstr, "qv": qvec, "k": top_k, "cand_k": cand_k}).mappings().all()

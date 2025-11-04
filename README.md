@@ -15,7 +15,7 @@
     ```bash
     python -m venv .venv
     source .venv/bin/activate
-    pip install poetry
+    pip install -e .[dev]
     ```
 
     or using `conda`:
@@ -23,22 +23,16 @@
     ```bash
     conda create -n bionexus python=3.10
     conda activate bionexus
-    pip install poetry
+    pip install -e .[dev]
     ```
 
-4) Install deps:
-
-    ```bash
-    poetry install --all-extras
-    ```
-
-5) Create/upgrade schema:
+4) Create/upgrade schema:
 
     ```bash
     bionexus upgrade head
     ```
 
-6) Load data:
+5) Load data:
 
     * Load NPAtlas compound structures, their names and properties, and organism annotations:
 
@@ -48,27 +42,11 @@
 
     * Load MIBiG:
 
-        Make sure to have installed the `bio` extras:
-
-        ```bash
-        poetry install --extras bio
-        ```
-
-        Then run:
-
         ```bash
         bionexus load-mibig
         ```
 
     * (Optional) Compute compound fingerprints:
-
-        Make sure to have installed the `chem` extras:
-
-        ```bash
-        poetry install --extras chem
-        ```
-
-        Then run:
 
         ```bash
         bionexus compute-fp-morgan
@@ -81,14 +59,6 @@
         ```
 
     * (Optional) Parse compounds with RetroMol:
-
-        Make sure to have installed the `retromol` extras:
-
-        ```bash
-        poetry install --extras retromol
-        ```
-
-        Then run:
 
         ```bash
         bionexus parse-compounds

@@ -1,37 +1,95 @@
-[tool.poetry]
+[project]
 name = "bionexus"
 version = "1.0.0"
-description = "Bionexus: Postgres schema + NPAtlas ETL (argparse)"
-authors = ["David Meijer <you@example.com>"]
-packages = [{ include = "bionexus" }]
+description = "BioNexus facilitates cross-modal retrieval between natural products and biosynthetic gene clusters"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = [
+    "LICENSE",
+]
+authors = [
+    { name = "David Meijer", email = "david.meijer@wur.nl" }
+]
+keywords = ["retrieval", "cross-modal", "natural-products", "biosynthetic-gene-clusters"]
 
-[tool.poetry.dependencies]
-python = ">=3.10"
-SQLAlchemy = "^2.0"
-psycopg = {version = "^3.2", extras=["binary"]}
-alembic = "^1.13"
-python-dotenv = "^1.0"
-rich = "^13.7"
-rdkit = {version = "*", optional = true}
-pgvector = "^0.3.1"
-ijson = "^3.4.0"
-tqdm = "^4.67.1"
-pandas = "^2.3.3"
-biopython = {version = "^1.83", optional = true}
-aiohttp = "^3.13.0"
-retromol = {version = "^1.0.1", optional = true}
+dependencies = [
+    "SQLAlchemy",
+    "psycopg[binary]>=3.2,<4.0",
+    "alembic",
+    "python-dotenv",
+    "rich",
+    "rdkit",
+    "pgvector",
+    "ijson",
+    "tqdm",
+    "pandas",
+    "biopython",
+    "aiohttp",
+    "retromol",
+    "biocracker",
+]
 
-[tool.poetry.extras]
-chem = ["rdkit"]
-bio = ["biopython"]
-retromol = ["retromol"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics"
+]
 
-[tool.poetry.group.dev.dependencies]
-ruff = "^0.6.0"
+[project.urls]
+Homepage = "https://github.com/moltools/bionexus"
+Repository = "https://github.com/moltools/bionexus"
+Issues = "https://github.com/moltools/bionexus/issues"
+Documentation = "https://github.com/moltools/bionexus#readme"
 
 [build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.poetry.scripts]
+[project.optional-dependencies]
+dev = [
+    "ruff"
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bionexus"]
+sources = ["src"]
+include = []
+
+[project.scripts]
 bionexus = "bionexus.cli:main"
+
+# -------------------------
+# Hatch env + scripts
+# -------------------------
+[tool.hatch.envs.dev]
+features = ["dev"]
+python = "3.10"
+
+[tool.hatch.envs.dev.scripts]
+lint = "ruff check ."
+fmt = "ruff format ."
+
+# -------------------------
+# Ruff
+# -------------------------
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["build", "dist", ".venv", "venv", "typings"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/data/**/*" = ["E501"]

@@ -1,13 +1,14 @@
 """Alembic migration environment configuration file."""
 
 from __future__ import annotations
+
+import os
 from logging.config import fileConfig
 from pathlib import Path
-import os
 
 from sqlalchemy import engine_from_config, pool
-from alembic import context
 
+from alembic import context
 from bionexus.db import models as bnx_models
 
 # Make sure we import local repo version, not installed package
@@ -65,9 +66,7 @@ def run_migrations_online() -> None:
     """
     Run migrations in 'online' mode.
     """
-    connectable = engine_from_config(
-        {"sqlalchemy.url": get_url()}, prefix="sqlalchemy.", poolclass=pool.NullPool
-    )
+    connectable = engine_from_config({"sqlalchemy.url": get_url()}, prefix="sqlalchemy.", poolclass=pool.NullPool)
     with connectable.connect() as connection:
         context.configure(
             connection=connection,

@@ -1,20 +1,19 @@
 """Utility functions for downloading and extracting files safely."""
 
 from __future__ import annotations
+
+import gzip
+import logging
 import re
+import shutil
 import sys
 import tarfile
 import zipfile
-import gzip
-import shutil
-import logging
 from pathlib import Path
-
 from urllib.parse import urlparse
-from urllib.request import urlopen, Request
+from urllib.request import Request, urlopen
 
 from bionexus.config import default_cache_dir
-
 
 logger = logging.getLogger(__name__)
 
@@ -199,9 +198,7 @@ def extract_if_needed(path: str, cache_dir: str | None = None) -> list[str]:
 
     # Plain single-file .gz (NOT .tar.gz)
     name_lower = p.name.lower()
-    if name_lower.endswith(".gz") and not (
-        name_lower.endswith(".tar.gz") or name_lower.endswith(".tgz")
-    ):
+    if name_lower.endswith(".gz") and not (name_lower.endswith(".tar.gz") or name_lower.endswith(".tgz")):
         # Write decompressed file into the outdir with the .gz stripped
         out_file = outdir / _base_for_outdir(p)
         out_file.parent.mkdir(parents=True, exist_ok=True)

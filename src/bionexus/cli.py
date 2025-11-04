@@ -1,25 +1,25 @@
 """BioNexus command-line interface (CLI) using argparse."""
 
 from __future__ import annotations
-import os
-import sys
+
 import argparse
-import subprocess
-import logging
 import json
+import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
-from rich.table import Table
 from rich.console import Console
+from rich.table import Table
 from sqlalchemy import text
 
-from bionexus.config import DEFAULT_NPATLAS_URL, DEFAULT_MIBIG_JSON_URL
+from bionexus.config import DEFAULT_MIBIG_JSON_URL, DEFAULT_NPATLAS_URL
+from bionexus.db.engine import engine
+from bionexus.db.models import Base
 from bionexus.utils.logging import setup_logging
 from bionexus.utils.net import ensure_download, extract_if_needed
-from bionexus.db.models import Base
-from bionexus.db.engine import engine
-
 
 console = Console()
 
@@ -73,9 +73,7 @@ def cmd_downgrade(args: argparse.Namespace) -> None:
     """
     rev = args.rev
     if not rev:
-        console.print(
-            "[red]You must provide a revision to downgrade to (e.g., -1, base, or a rev id)[/]"
-        )
+        console.print("[red]You must provide a revision to downgrade to (e.g., -1, base, or a rev id)[/]")
         sys.exit(2)
     sys.exit(_run_alembic("downgrade", rev))
 
@@ -139,9 +137,7 @@ def cmd_stamp(args: argparse.Namespace) -> None:
     :param args: command-line arguments
     """
     if not args.rev:
-        console.print(
-            "[red]Provide a revision to stamp (e.g. head or a specific rev id)[/]"
-        )
+        console.print("[red]Provide a revision to stamp (e.g. head or a specific rev id)[/]")
         sys.exit(2)
     sys.exit(_run_alembic("stamp", args.rev))
 
@@ -157,23 +153,21 @@ def cmd_load_npatlas(args: argparse.Namespace) -> None:
     # Download and extract if needed
     url = args.url or DEFAULT_NPATLAS_URL
     if not url:
-        console.print(
-            "[red]No NPAtlas URL set. Put NPATLAS_URL in .env or pass --url[/]"
-        )
+        console.print("[red]No NPAtlas URL set. Put NPATLAS_URL in .env or pass --url[/]")
         sys.exit(2)
     local_path = ensure_download(url, args.cache_dir, args.force)
     extracted = extract_if_needed(local_path, args.cache_dir)
 
     def pick_data(files):  # choose a data file to load
-        cands = [f for f in files if f.lower().endswith((".json"))]
+        cands = [f for f in files if f.lower().endswith(".json")]
         return cands[0] if cands else local_path
 
     data_path = pick_data(extracted) if extracted else local_path
-    n_compounds, n_records, n_annotations = load_npatlas_file(
-        path=data_path, chunk_size=args.chunk_size
-    )
+    n_compounds, n_records, n_annotations = load_npatlas_file(path=data_path, chunk_size=args.chunk_size)
     console.print(
-        f"Loaded {n_compounds} NPAtlas compounds, {n_records} associated compound records, and {n_annotations} associated annotations"
+        f"Loaded {n_compounds} NPAtlas compounds, "
+        f"{n_records} associated compound records, "
+        f"and {n_annotations} associated annotations"
     )
 
 
@@ -183,7 +177,7 @@ def cmd_load_mibig(args: argparse.Namespace) -> None:
 
     :param args: command-line arguments
     """
-    from bionexus.etl.sources.mibig import load_mibig_files, download_mibig_gbks
+    from bionexus.etl.sources.mibig import download_mibig_gbks, load_mibig_files
 
     # Download and extract if needed
     url_json = args.url_json or DEFAULT_MIBIG_JSON_URL
@@ -195,8 +189,9 @@ def cmd_load_mibig(args: argparse.Namespace) -> None:
     local_path_json = ensure_download(url_json, args.cache_dir, args.force)
     extracted_jsons = extract_if_needed(local_path_json, args.cache_dir)
 
-    # Quickly loop over JSONS and extract accessions with their versions so we can download up-to-date GBKs with product info
-    # gbk_url we are using: https://mibig.secondarymetabolites.org/repository/{accession}.{version}/generated/{accession}.gbk
+    # Loop over JSONS and extract accessions with their versions so we can download up-to-date GBKs with product info
+    # gbk_url we are using:
+    #   https://mibig.secondarymetabolites.org/repository/{accession}.{version}/generated/{accession}.gbk
     versioned_accessions: tuple[str, str] = []
     for json_path in extracted_jsons if extracted_jsons else [local_path_json]:
         with open(json_path) as f:
@@ -205,9 +200,7 @@ def cmd_load_mibig(args: argparse.Namespace) -> None:
             version = data.get("version", None)
             if accession and version:
                 versioned_accessions.append((accession, version))
-    console.print(
-        f"Found {len(versioned_accessions)} MIBiG JSON files with accessions and versions"
-    )
+    console.print(f"Found {len(versioned_accessions)} MIBiG JSON files with accessions and versions")
     gbk_paths: list[Path] = download_mibig_gbks(
         accessions=versioned_accessions,
         outdir=os.path.join(args.cache_dir, "mibig_gbks"),
@@ -220,7 +213,10 @@ def cmd_load_mibig(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
     )
     console.print(
-        f"Loaded {n_regions} MIBiG regions, {n_compounds} associated compound structures, {n_records} associated compound records, and {n_annotations} associated annotations"
+        f"Loaded {n_regions} MIBiG regions, "
+        f"{n_compounds} associated compound structures, "
+        f"{n_records} associated compound records, "
+        f"and {n_annotations} associated annotations"
     )
 
 
@@ -282,9 +278,7 @@ def cmd_compute_fp_retro(args: argparse.Namespace) -> None:
 
     :param args: command-line arguments
     """
-    console.print(
-        "[yellow]Biosynthetic fingerprint computation is not yet implemented[/]"
-    )
+    console.print("[yellow]Biosynthetic fingerprint computation is not yet implemented[/]")
     exit(1)
 
 
@@ -341,8 +335,8 @@ def cmd_search_morgan(args: argparse.Namespace) -> None:
 
     :param args: command-line arguments
     """
-    from bionexus.etl.chemistry import _morgan_bits_and_vec
     from bionexus.db.search import jaccard_search_exact, jaccard_search_hybrid
+    from bionexus.etl.chemistry import _morgan_bits_and_vec
 
     bits, _pop, vec = _morgan_bits_and_vec(args.smiles)
     if not bits:
@@ -383,9 +377,7 @@ def cmd_search_retro(args: argparse.Namespace) -> None:
 
     :param args: command-line arguments
     """
-    console.print(
-        "[yellow]Searching by biosynthetic fingerprint is not yet implemented[/]"
-    )
+    console.print("[yellow]Searching by biosynthetic fingerprint is not yet implemented[/]")
     exit(1)
 
 
@@ -406,16 +398,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_up.add_argument("rev", nargs="?", default="head")
     p_up.set_defaults(func=cmd_upgrade)
 
-    p_rev = sub.add_parser(
-        "revision", help="Create Alembic revision with --autogenerate"
-    )
+    p_rev = sub.add_parser("revision", help="Create Alembic revision with --autogenerate")
     p_rev.add_argument("-m", "--message", required=True, help="Revision message")
-    p_rev.add_argument(
-        "--head", default="head", help="Base head for the new revision (default: head)"
-    )
-    p_rev.add_argument(
-        "--splice", action="store_true", help="Create a new branch from the given head"
-    )
+    p_rev.add_argument("--head", default="head", help="Base head for the new revision (default: head)")
+    p_rev.add_argument("--splice", action="store_true", help="Create a new branch from the given head")
     p_rev.add_argument("--rev-id", default=None, help="Hardcode a specific revision id")
     p_rev.add_argument(
         "--depends-on",
@@ -440,18 +426,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_heads = sub.add_parser("heads", help="Show head revision(s)")
     p_heads.set_defaults(func=cmd_heads)
 
-    p_stamp_cmd = sub.add_parser(
-        "stamp", help="Stamp the database with a revision without running migrations"
-    )
-    p_stamp_cmd.add_argument(
-        "rev", help="Revision to stamp (e.g. head, base, or a rev id)"
-    )
+    p_stamp_cmd = sub.add_parser("stamp", help="Stamp the database with a revision without running migrations")
+    p_stamp_cmd.add_argument("rev", help="Revision to stamp (e.g. head, base, or a rev id)")
     p_stamp_cmd.set_defaults(func=cmd_stamp)
 
     p_down = sub.add_parser("downgrade", help="Run Alembic downgrade")
-    p_down.add_argument(
-        "rev", help="Revision to downgrade to (e.g. -1, base, or a rev id)"
-    )
+    p_down.add_argument("rev", help="Revision to downgrade to (e.g. -1, base, or a rev id)")
     p_down.set_defaults(func=cmd_downgrade)
 
     p_np = sub.add_parser("load-npatlas", help="Download (if needed) and load NPAtlas")
@@ -462,59 +442,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_np.set_defaults(func=cmd_load_npatlas)
 
     p_mibig = sub.add_parser("load-mibig", help="Download (if needed) and load MIBiG")
-    p_mibig.add_argument(
-        "--url-json", default=None, help="Override MIBiG JSON download URL"
-    )
-    p_mibig.add_argument(
-        "--url-gbk", default=None, help="Override MIBiG GenBank download URL"
-    )
+    p_mibig.add_argument("--url-json", default=None, help="Override MIBiG JSON download URL")
+    p_mibig.add_argument("--url-gbk", default=None, help="Override MIBiG GenBank download URL")
     p_mibig.add_argument("--cache-dir", default=None, help="Cache/work dir")
-    p_mibig.add_argument(
-        "--force", action="store_true", help="Redownload even if present"
-    )
+    p_mibig.add_argument("--force", action="store_true", help="Redownload even if present")
     p_mibig.add_argument("--chunk-size", type=int, default=1000)
     p_mibig.set_defaults(func=cmd_load_mibig)
 
-    p_annot_npc = sub.add_parser(
-        "annotate-npc", help="Annotate NPClassifier classes for compounds without one"
-    )
+    p_annot_npc = sub.add_parser("annotate-npc", help="Annotate NPClassifier classes for compounds without one")
     p_annot_npc.add_argument("--batch", type=int, default=2000)
-    p_annot_npc.add_argument(
-        "--recompute", action="store_true", help="Force recomputation for all compounds"
-    )
+    p_annot_npc.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
     p_annot_npc.set_defaults(func=cmd_annot_npc)
 
-    p_parse_compounds = sub.add_parser(
-        "parse-compounds", help="Parse compounds from database with RetroMol"
-    )
-    p_parse_compounds.add_argument(
-        "--cache-dir", default=None, help="Cache/work dir for RetroMol"
-    )
+    p_parse_compounds = sub.add_parser("parse-compounds", help="Parse compounds from database with RetroMol")
+    p_parse_compounds.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
     p_parse_compounds.add_argument("--batch", type=int, default=2000)
-    p_parse_compounds.add_argument(
-        "--recompute", action="store_true", help="Force recomputation for all compounds"
-    )
-    p_parse_compounds.add_argument(
-        "--workers", type=int, default=1, help="Number of parallel workers to use"
-    )
+    p_parse_compounds.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
+    p_parse_compounds.add_argument("--workers", type=int, default=1, help="Number of parallel workers to use")
     p_parse_compounds.set_defaults(func=cmd_parse_compounds)
 
-    p_parse_bgcs = sub.add_parser(
-        "parse-bgcs", help="Parse BGCs from database with RetroMol"
-    )
+    p_parse_bgcs = sub.add_parser("parse-bgcs", help="Parse BGCs from database with RetroMol")
     p_parse_bgcs.add_argument("--batch", type=int, default=2000)
-    p_parse_bgcs.add_argument(
-        "--recompute", action="store_true", help="Force recomputation for all BGCs"
-    )
+    p_parse_bgcs.add_argument("--recompute", action="store_true", help="Force recomputation for all BGCs")
     p_parse_bgcs.set_defaults(func=cmd_parse_bgcs)
 
-    p_fp = sub.add_parser(
-        "compute-fp-morgan", help="Compute fingerprints for compounds with SMILES"
-    )
+    p_fp = sub.add_parser("compute-fp-morgan", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)
-    p_fp.add_argument(
-        "--recompute", action="store_true", help="Force recomputation for all compounds"
-    )
+    p_fp.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
     p_fp.set_defaults(func=cmd_compute_fp_morgan)
 
     p_do = sub.add_parser(
@@ -543,34 +497,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_res.add_argument("--dump", required=True)
     p_res.set_defaults(func=cmd_restore_db)
 
-    p_search_m = sub.add_parser(
-        "search-morgan", help="Search compounds by Jaccard to a SMILES"
-    )
+    p_search_m = sub.add_parser("search-morgan", help="Search compounds by Jaccard to a SMILES")
     p_search_m.add_argument("--smiles", required=True)
     p_search_m.add_argument("--top-k", type=int, default=20)
-    p_search_m.add_argument(
-        "--hybrid", action="store_true", help="Use pgvector candidate search"
-    )
-    p_search_m.add_argument(
-        "--out", default=None, help="Optional output file (TSV/CSV)"
-    )
+    p_search_m.add_argument("--hybrid", action="store_true", help="Use pgvector candidate search")
+    p_search_m.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
     p_search_m.set_defaults(func=cmd_search_morgan)
 
-    p_search_r = sub.add_parser(
-        "search-retro", help="Search compoundsa and BGCs to a biosynthetic fingerprint"
-    )
-    p_search_r.add_argument(
-        "--for", required=True, choices=["compound", "gbk"], help="Input type"
-    )
+    p_search_r = sub.add_parser("search-retro", help="Search compoundsa and BGCs to a biosynthetic fingerprint")
+    p_search_r.add_argument("--for", required=True, choices=["compound", "gbk"], help="Input type")
     p_search_r.add_argument(
         "--input",
         required=True,
         type=str,
         help="SMILES for 'compound' input type or path to GBK region file for 'gbk' input type",
     )
-    p_search_r.add_argument(
-        "--out", default=None, help="Optional output file (TSV/CSV)"
-    )
+    p_search_r.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
     p_search_r.set_defaults(func=cmd_search_retro)
 
     return p
