@@ -1,14 +1,21 @@
+"""Load NPAtlas JSON data into the BioNexus database."""
+
 from __future__ import annotations
 import logging
+
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert
 from tqdm import tqdm
+
 from bionexus.utils.io import iter_json
+from bionexus.etl.chemistry import get_atom_counts
 from bionexus.db.engine import SessionLocal
 from bionexus.db.models import Annotation, Compound, CompoundRecord
 
+
 logger = logging.getLogger(__name__)
+
 
 def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
     """
@@ -78,6 +85,9 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
                 continue
             seen_record_key.add(rec_key)
 
+            # compute atom counts
+            atom_counts = get_atom_counts(smiles)
+
             # 1) find or create canonical compound by inchikey
             comp = s.scalars(select(Compound).where(Compound.inchikey == inchikey)).first()
             if not comp:
@@ -95,6 +105,7 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
                         exact_mass=exact_mass,
                         m_plus_h=m_plus_h,
                         m_plus_na=m_plus_na,
+                        **(atom_counts or {}),
                     )
                     batch_compounds.append(comp)
                     seen_inchikey.add(inchikey)
@@ -109,6 +120,11 @@ def load_npatlas_file(path: str, chunk_size: int = 10000) -> tuple[int, int]:
                 if comp.exact_mass is None and exact_mass: comp.exact_mass = exact_mass
                 if comp.m_plus_h is None and m_plus_h: comp.m_plus_h = m_plus_h
                 if comp.m_plus_na is None and m_plus_na: comp.m_plus_na = m_plus_na
+                # update atom counts if missing
+                if atom_counts:
+                    for k, v in atom_counts.items():
+                        if getattr(comp, k) is None and v is not None:
+                            setattr(comp, k, v)
 
             # 2) ensure a CompoundRecord (unique on source+ext_id)
             rec_exists = s.scalars(

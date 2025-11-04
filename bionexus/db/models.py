@@ -28,7 +28,19 @@ class Compound(Base):
     exact_mass: Mapped[float | None] = mapped_column(Float)
     m_plus_h: Mapped[float | None] = mapped_column(Float)
     m_plus_na: Mapped[float | None] = mapped_column(Float)
-    
+
+    # elemental counts
+    c_count: Mapped[int | None] = mapped_column(Integer)
+    h_count: Mapped[int | None] = mapped_column(Integer)
+    n_count: Mapped[int | None] = mapped_column(Integer)
+    o_count: Mapped[int | None] = mapped_column(Integer)
+    s_count: Mapped[int | None] = mapped_column(Integer)
+    p_count: Mapped[int | None] = mapped_column(Integer)
+    f_count: Mapped[int | None] = mapped_column(Integer)
+    cl_count: Mapped[int | None] = mapped_column(Integer)
+    br_count: Mapped[int | None] = mapped_column(Integer)
+    i_count: Mapped[int | None] = mapped_column(Integer)
+
     # fingerprints
     fp_morgan_b2048_r2_bit: Mapped[str | None] = mapped_column(BIT(2048))
     fp_morgan_b2048_r2_pop: Mapped[int | None] = mapped_column(SmallInteger)

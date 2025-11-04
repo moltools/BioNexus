@@ -1,5 +1,8 @@
+"""ETL functions for MIBiG data source: downloading GBK files and loading JSON/GBK data into the database."""
+
 from __future__ import annotations
 import json, hashlib, logging, re, random
+
 import asyncio
 import aiohttp
 from aiohttp import ClientResponseError, ClientConnectorError, ClientOSError, ClientPayloadError
@@ -8,14 +11,18 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert
 from tqdm import tqdm
+
 from bionexus.config import DEFAULT_MAX_BYTES_GBK
-from bionexus.etl.chemistry import smiles_to_inchikey
+from bionexus.etl.chemistry import get_atom_counts, smiles_to_inchikey
 from bionexus.db.engine import SessionLocal
 from bionexus.db.models import Annotation, Compound, CompoundRecord, GenBankRegion
 
+
 logger = logging.getLogger(__name__)
 
+
 MIBIG_URL_TEMPLATE = "https://mibig.secondarymetabolites.org/repository/{accession}.{version}/generated/{accession}.gbk"
+
 
 async def _fetch_one(session, sem, url, out_path, retries=5, timeout_s=20):
     """Download a single file with retries and exponential backoff."""
@@ -55,6 +62,7 @@ async def _fetch_one(session, sem, url, out_path, retries=5, timeout_s=20):
         tmp_path.unlink(missing_ok=True)
     return None
 
+
 async def _download_all(accessions, outdir, concurrency=10, retries=5, timeout_s=20):
     connector = aiohttp.TCPConnector(limit=concurrency, limit_per_host=5)
     sem = asyncio.Semaphore(concurrency)
@@ -81,6 +89,7 @@ async def _download_all(accessions, outdir, concurrency=10, retries=5, timeout_s
 
         return results
 
+
 def download_mibig_gbks(
     accessions: list[tuple[str, str]],
     outdir: str | Path,
@@ -106,12 +115,15 @@ def download_mibig_gbks(
     outdir.mkdir(parents=True, exist_ok=True)
     return asyncio.run(_download_all(accessions, outdir, concurrency, retries, timeout))
 
+
 def _read_gbk_text(path: str) -> str:
     with open(path, "rt", encoding="utf-8", errors="replace") as fh:
         return fh.read()
 
+
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
+
 
 def extract_taxonomy_info(record) -> dict[str, str | list[str] | None]:
     organism = record.annotations.get("organism", "")
@@ -142,6 +154,7 @@ def extract_taxonomy_info(record) -> dict[str, str | list[str] | None]:
         "strain": strain_guess,
     }
 
+
 def extract_region_products(record):
     """
     Extract all 'product' values from features of type 'region'.
@@ -158,6 +171,7 @@ def extract_region_products(record):
     seen = set()
     unique_products = [p for p in products if not (p in seen or seen.add(p))]
     return unique_products
+
 
 def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], chunk_size: int = 1000) -> tuple[int, int, int, int]:
     from Bio import SeqIO
@@ -207,6 +221,9 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                     if not inchikey:
                         continue
                     
+                    # compute atom counts
+                    atom_counts = get_atom_counts(smiles)
+                    
                     # 1) find or stage canonical compound by inchikey
                     comp = s.scalars(select(Compound).where(Compound.inchikey == inchikey)).first()
                     if not comp:
@@ -215,11 +232,13 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                             # if we have already staged it in this batch, fit it from batch list
                             comp = next((c for c in batch_compounds if c.inchikey == inchikey), None)
                         if not comp:
+
                             comp = Compound(
                                 inchikey=inchikey,
                                 smiles=smiles,
                                 mol_formula=mol_formula,
                                 exact_mass=exact_mass,
+                                **(atom_counts or {}),
                             )
                             batch_compounds.append(comp)
                             seen_inchikey.add(inchikey)
@@ -230,6 +249,11 @@ def load_mibig_files(json_paths: list[str] | None, gbk_paths: str | list[str], c
                         if comp.smiles is None and smiles: comp.smiles = smiles
                         if comp.mol_formula is None and mol_formula: comp.mol_formula = mol_formula
                         if comp.exact_mass is None and exact_mass: comp.exact_mass = exact_mass
+                        # update atom counts if missing
+                        if atom_counts:
+                            for k, v in atom_counts.items():
+                                if getattr(comp, k) is None and v is not None:
+                                    setattr(comp, k, v)
 
                     # 2) ensure CompoundRecord, batch de-dupe by inchikey+source+ext_id (pre-flush)
                     rk = (inchikey, source, ext_id)

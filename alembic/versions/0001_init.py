@@ -25,6 +25,17 @@ def upgrade():
         sa.Column("m_plus_h", sa.Float, nullable=True),
         sa.Column("m_plus_na", sa.Float, nullable=True),
 
+        sa.Column("c_count", sa.Integer, nullable=True),
+        sa.Column("h_count", sa.Integer, nullable=True),
+        sa.Column("n_count", sa.Integer, nullable=True),
+        sa.Column("o_count", sa.Integer, nullable=True),
+        sa.Column("s_count", sa.Integer, nullable=True),
+        sa.Column("p_count", sa.Integer, nullable=True),
+        sa.Column("f_count", sa.Integer, nullable=True),
+        sa.Column("cl_count", sa.Integer, nullable=True),
+        sa.Column("br_count", sa.Integer, nullable=True),
+        sa.Column("i_count", sa.Integer, nullable=True),
+
         sa.Column("fp_morgan_b2048_r2_bit", BIT(2048), nullable=True),
         sa.Column("fp_morgan_b2048_r2_pop", sa.SmallInteger, nullable=True),
         sa.Column("fp_morgan_b2048_r2_vec", Vector(2048), nullable=True),

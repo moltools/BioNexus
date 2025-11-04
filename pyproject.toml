@@ -12,17 +12,19 @@ psycopg = {version = "^3.2", extras=["binary"]}
 alembic = "^1.13"
 python-dotenv = "^1.0"
 rich = "^13.7"
-rdkit = {version = "^2024.09", optional = true}
+rdkit = {version = "*", optional = true}
 pgvector = "^0.3.1"
 ijson = "^3.4.0"
 tqdm = "^4.67.1"
 pandas = "^2.3.3"
 biopython = {version = "^1.83", optional = true}
 aiohttp = "^3.13.0"
+retromol = {version = "^1.0.1", optional = true}
 
 [tool.poetry.extras]
 chem = ["rdkit"]
 bio = ["biopython"]
+retromol = ["retromol"]
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

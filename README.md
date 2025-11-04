@@ -46,6 +46,20 @@
         bionexus load-npatlas
         ```
 
+    * Load MIBiG:
+
+        Make sure to have installed the `bio` extras:
+
+        ```bash
+        poetry install --extras bio
+        ```
+
+        Then run:
+
+        ```bash
+        bionexus load-mibig
+        ```
+
     * (Optional) Compute compound fingerprints:
 
         Make sure to have installed the `chem` extras:
@@ -60,19 +74,26 @@
         bionexus compute-fp-morgan
         ```
 
-    * Load MIBiG:
-
-        Make sure to have installed the `bio` extras:
+    * (Optional) Supplement NPClassifier predictions:
 
         ```bash
-        poetry install --extras bio
+        bionexus annotate-npc
+        ```
+
+    * (Optional) Parse compounds with RetroMol:
+
+        Make sure to have installed the `retromol` extras:
+
+        ```bash
+        poetry install --extras retromol
         ```
 
         Then run:
 
         ```bash
-        bionexus load-mibig
+        bionexus parse-compounds
         ```
+    
 
 7) Dump for deployoment:
 
