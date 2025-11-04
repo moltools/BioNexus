@@ -1,12 +1,12 @@
 [tool.poetry]
 name = "bionexus"
-version = "0.2.0"
+version = "1.0.0"
 description = "Bionexus: Postgres schema + NPAtlas ETL (argparse)"
 authors = ["David Meijer <you@example.com>"]
 packages = [{ include = "bionexus" }]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.10"
 SQLAlchemy = "^2.0"
 psycopg = {version = "^3.2", extras=["binary"]}
 alembic = "^1.13"
@@ -25,6 +25,9 @@ retromol = {version = "^1.0.1", optional = true}
 chem = ["rdkit"]
 bio = ["biopython"]
 retromol = ["retromol"]
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.6.0"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]
