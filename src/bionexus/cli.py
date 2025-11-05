@@ -251,15 +251,6 @@ def cmd_parse_compounds(args: argparse.Namespace) -> None:
     console.print(f"Used RetroMol to parse {n_parsed} compounds")
 
 
-def cmd_parse_bgcs(args: argparse.Namespace) -> None:
-    """
-    Parse BGCs from the database using RetroMol.
-
-    :param args: command-line arguments
-    """
-    raise NotImplementedError("BGC parsing with RetroMol is not yet implemented")
-
-
 def cmd_compute_fp_morgan(args: argparse.Namespace) -> None:
     """
     Compute Morgan fingerprints for compounds with SMILES.
@@ -272,14 +263,16 @@ def cmd_compute_fp_morgan(args: argparse.Namespace) -> None:
     console.print(f"Computed fingerprints for {done} compounds (batch={args.batch})")
 
 
-def cmd_compute_fp_retro(args: argparse.Namespace) -> None:
+def cmd_compute_fp_retro_compound(args: argparse.Namespace) -> None:
     """
     Compute biosynthetic fingerprints for compounds and/or GenBank records.
 
     :param args: command-line arguments
     """
-    console.print("[yellow]Biosynthetic fingerprint computation is not yet implemented[/]")
-    exit(1)
+    from bionexus.etl.retromol import backfill_retro_fingerprints
+
+    done = backfill_retro_fingerprints(cache_dir=args.cache_dir, batch=args.batch, recompute=args.recompute)
+    console.print(f"Computed RetroMol fingerprints for {done} entries (batch={args.batch})")
 
 
 def cmd_dump_db(args: argparse.Namespace) -> None:
@@ -353,7 +346,7 @@ def cmd_search_morgan(args: argparse.Namespace) -> None:
     if not args.out:
         # console.print(df[["source", "name", "jacc"]])
         table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("id", style="dim", width=6)
+        table.add_column("compound_id", style="dim", width=6)
         table.add_column("source", style="dim", width=10)
         table.add_column("name", style="white", width=30)
         table.add_column("jacc", justify="right")
@@ -371,14 +364,81 @@ def cmd_search_morgan(args: argparse.Namespace) -> None:
         console.print(f"Wrote {len(df)} results to [green]{args.out}[/]")
 
 
-def cmd_search_retro(args: argparse.Namespace) -> None:
+def cmd_search_retro_compound(args: argparse.Namespace) -> None:
     """
-    Search compounds and/or BGCs by biosynthetic fingerprint similarity.
+    Search compounds by biosynthetic similarity to a given RetroMol fingerprint.
 
     :param args: command-line arguments
     """
-    console.print("[yellow]Searching by biosynthetic fingerprint is not yet implemented[/]")
-    exit(1)
+    from bionexus.db.search import retro_search_compound
+
+    rows = retro_search_compound(
+        smiles=args.smiles,
+        top_k=args.top_k,
+        counted=getattr(args, "counted", False),
+    )
+    df = pd.DataFrame(rows)
+
+    if not args.out:
+        # console.print(df[["source", "name", "jacc"]])
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("compound_id", style="dim", width=6)
+        table.add_column("source", style="dim", width=10)
+        table.add_column("name", style="white", width=30)
+        table.add_column("cosine", justify="right")
+        for _, row in df.iterrows():
+            table.add_row(
+                f"{row['id']}",
+                str(row["source"]),
+                f"[cyan]{row['name']}",
+                f"{row['cosine']:.3f}",
+            )
+        console.print(table)
+    else:
+        sep = "," if args.out.lower().endswith(".csv") else "\t"
+        df.to_csv(args.out, index=False, sep=sep)
+        console.print(f"Wrote {len(df)} results to [green]{args.out}[/]")
+
+
+def cmd_search_retro_gbk(args: argparse.Namespace) -> None:
+    """
+    Search compounds by biosynthetic similarity to a GenBank file.
+
+    :param args: command-line arguments
+    """
+    from bionexus.db.search import retro_search_gbk
+
+    rows = retro_search_gbk(
+        path=args.path,
+        top_k=args.top_k,
+        readout_toplevel=args.readout_toplevel,
+        readout_sublevel=args.readout_sublevel,
+        counted=getattr(args, "counted", False),
+        cache_dir=getattr(args, "cache_dir", None),
+    )
+    df = pd.DataFrame(rows)
+
+    if not args.out:
+        # console.print(df[["source", "name", "jacc"]])
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("record", style="dim", width=30)
+        table.add_column("compound_id", style="dim", width=6)
+        table.add_column("source", style="dim", width=10)
+        table.add_column("name", style="white", width=30)
+        table.add_column("cosine", justify="right")
+        for _, row in df.iterrows():
+            table.add_row(
+                f"{row['record']}",
+                f"{row['id']}",
+                str(row["source"]),
+                f"[cyan]{row['name']}",
+                f"{row['cosine']:.3f}",
+            )
+        console.print(table)
+    else:
+        sep = "," if args.out.lower().endswith(".csv") else "\t"
+        df.to_csv(args.out, index=False, sep=sep)
+        console.print(f"Wrote {len(df)} results to [green]{args.out}[/]")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -461,33 +521,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_parse_compounds.add_argument("--workers", type=int, default=1, help="Number of parallel workers to use")
     p_parse_compounds.set_defaults(func=cmd_parse_compounds)
 
-    p_parse_bgcs = sub.add_parser("parse-bgcs", help="Parse BGCs from database with RetroMol")
-    p_parse_bgcs.add_argument("--batch", type=int, default=2000)
-    p_parse_bgcs.add_argument("--recompute", action="store_true", help="Force recomputation for all BGCs")
-    p_parse_bgcs.set_defaults(func=cmd_parse_bgcs)
-
     p_fp = sub.add_parser("compute-fp-morgan", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)
     p_fp.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
     p_fp.set_defaults(func=cmd_compute_fp_morgan)
 
-    p_do = sub.add_parser(
-        "compute-fp-retro",
-        help="Compute biosynthetic fingerprints for compounds and/or GenBank records",
-    )
-    p_do.add_argument(
-        "--for",
-        choices=["compounds", "gbks", "both"],
-        default="both",
-        help="What to compute fingerprints for",
-    )
+    p_do = sub.add_parser("compute-fp-retro-compound",help="Compute biosynthetic fingerprints for compounds")
+    p_do.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
     p_do.add_argument("--batch", type=int, default=2000)
-    p_do.add_argument(
-        "--recompute",
-        action="store_true",
-        help="Force recomputation for all compounds/records",
-    )
-    p_do.set_defaults(func=cmd_compute_fp_retro)
+    p_do.add_argument("--recompute", action="store_true", help="Force recomputation")
+    p_do.set_defaults(func=cmd_compute_fp_retro_compound)
 
     p_dump = sub.add_parser("dump-db", help="Write pg_dump custom format")
     p_dump.add_argument("--out", default="dumps/bionexus.dump")
@@ -504,16 +547,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_search_m.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
     p_search_m.set_defaults(func=cmd_search_morgan)
 
-    p_search_r = sub.add_parser("search-retro", help="Search compoundsa and BGCs to a biosynthetic fingerprint")
-    p_search_r.add_argument("--for", required=True, choices=["compound", "gbk"], help="Input type")
-    p_search_r.add_argument(
-        "--input",
-        required=True,
-        type=str,
-        help="SMILES for 'compound' input type or path to GBK region file for 'gbk' input type",
-    )
+    p_search_r = sub.add_parser("search-retro-compound", help="Search compounds by biosynthetic similarity to a RetroMol fingerprint")
+    p_search_r.add_argument("--smiles", required=True)
+    p_search_r.add_argument("--top-k", type=int, default=20)
     p_search_r.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
-    p_search_r.set_defaults(func=cmd_search_retro)
+    p_search_r.add_argument("--counted", action="store_true", help="Use counted fingerprint for search")
+    p_search_r.set_defaults(func=cmd_search_retro_compound)
+
+    p_search_r_gbk = sub.add_parser("search-retro-gbk", help="Search compounds by biosynthetic similarity to a GenBank file")
+    p_search_r_gbk.add_argument("--path", required=True, help="Path to GenBank file")
+    p_search_r_gbk.add_argument("--top-k", type=int, default=50)
+    p_search_r_gbk.add_argument("--readout-toplevel", choices=["region", "cand_cluster"], default="region",
+                              help="Read out fingerprints at 'region' or 'cand_cluster' level")
+    p_search_r_gbk.add_argument("--readout-sublevel", choices=["rec", "gene"], default="rec",
+                              help="Read out fingerprints at 'rec' or 'gene' level")
+    p_search_r_gbk.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
+    p_search_r_gbk.add_argument("--counted", action="store_true", help="Use counted fingerprint for search")
+    p_search_r_gbk.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
+    p_search_r_gbk.set_defaults(func=cmd_search_retro_gbk)
 
     return p
 

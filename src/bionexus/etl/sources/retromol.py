@@ -53,13 +53,14 @@ def parse_compounds_with_retromol(
         import retromol
         import retromol.data
         from retromol.helpers import iter_json
+        from retromol.io import Result as RetroMolResult
 
         # Check if retromol is an installed command line tool
         if shutil.which("retromol") is None:
             raise ImportError("retromol command line tool not found in PATH")
     except ImportError:
         logger.error("retromol package or command line tool not found. Please install retromol.")
-        return -1
+        return 0
 
     # Limit number of workers to at least one, and 1 below number of CPU cores
     max_workers = max(1, os.cpu_count() - 1)
@@ -187,11 +188,14 @@ def parse_compounds_with_retromol(
         """
         if not payload:
             return (0, 0)
+        
+        # Build upsert statement; will update coverage and result_json on conflict
         stmt = insert(RetroMolCompound).values(payload)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_retromol_compound_compound_ruleset",
             set_={
                 "result_json": stmt.excluded.result_json,
+                "coverage": stmt.excluded.coverage,
             },
         )
         stmt = stmt.returning(literal_column("xmax = 0").label("inserted"))
@@ -221,10 +225,14 @@ def parse_compounds_with_retromol(
                 n_bad += 1
                 continue
 
+            result_obj = RetroMolResult.from_serialized(result_json)
+            coverage = result_obj.best_total_coverage()
+
             row = {
                 "compound_id": int(cid),
                 "ruleset_id": int(ruleset_id),
                 "result_json": payload_json,  # plain dict, JSON-safe
+                "coverage": coverage,
             }
             to_upsert.append(row)
 

@@ -256,13 +256,20 @@ class RetroMolCompound(Base):
     ruleset_id: Mapped[int] = mapped_column(ForeignKey("ruleset.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     result_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    fp_retro: Mapped[str | None] = mapped_column(BIT(512))
+    
+    # Precomputed properties from result_json
+    coverage: Mapped[float | None] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
 
     compound: Mapped[Compound] = relationship(back_populates="retromol_results")
     ruleset: Mapped[Ruleset] = relationship(back_populates="results")
+
+    retrofingerprints: Mapped[list["RetroFingerprint"]] = relationship(
+        back_populates="retromol_compound",
+        passive_deletes=True,
+    )  # no delete-orphan because FK is nullable by design
 
     __table_args__ = (
         Index("ix_retromol_compound_compound_id", "compound_id"),
@@ -282,3 +289,71 @@ Compound.retromol_results = relationship(
     back_populates="compound",
     cascade="all, delete-orphan",
 )
+
+
+class BioCrackerGenBank(Base):
+    """
+    Represents the readouts for a GenBank region using BioCracker
+    """
+
+    __tablename__ = "biocracker_genbank"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    genbank_region_id: Mapped[int] = mapped_column(ForeignKey("genbank_region.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+
+    retrofingerprints: Mapped[list["RetroFingerprint"]] = relationship(
+        back_populates="biocracker_genbank",
+        passive_deletes=True,
+    )  # no delete-orphan because FK is nullable by design
+
+    __table_args__ = (
+        Index("ix_biocracker_genbank_genbank_region_id", "genbank_region_id"),
+        # Only one result per (genbank_region)
+        UniqueConstraint(
+            "genbank_region_id",
+            name="uq_biocracker_genbank_genbank_region",
+        ),
+    )
+
+
+class RetroFingerprint(Base):
+    """
+    Represents RetroMol biosynthetic fingerprints for compounds and genbank records.
+    """
+
+    __tablename__ = "retrofingerprint"
+
+    id: Mapped[int] =  mapped_column(BigInteger, primary_key=True)
+
+    # Can be linked to either RetroMolCompound or BioCrackerGenBank; multiple RetroFingerprints per target allowed
+    retromol_compound_id: Mapped[int | None] = mapped_column(ForeignKey("retromol_compound.id", ondelete="CASCADE"), index=True)
+    biocracker_genbank_id: Mapped[int | None] = mapped_column(ForeignKey("biocracker_genbank.id", ondelete="CASCADE"), index=True) 
+
+    # Fingerprints
+    fp_retro_b512_bit: Mapped[str] = mapped_column(BIT(512))
+    fp_retro_b512_pop: Mapped[int] = mapped_column(SmallInteger)
+    fp_retro_b512_vec_binary: Mapped[list[float]] = mapped_column(Vector(512))
+    fp_retro_b512_vec_counted: Mapped[list[float]] = mapped_column(Vector(512))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"), nullable=False)
+
+    # Backrefs
+    retromol_compound: Mapped["RetroMolCompound | None"] = relationship(back_populates="retrofingerprints")
+    biocracker_genbank: Mapped["BioCrackerGenBank | None"] = relationship(back_populates="retrofingerprints")
+
+    __table_args__ = (
+        # Enforce exactly one target
+        CheckConstraint(
+            "("
+            "(retromol_compound_id IS NOT NULL AND biocracker_genbank_id IS NULL) OR "
+            "(retromol_compound_id IS NULL AND biocracker_genbank_id IS NOT NULL)"
+            ")",
+            name="ck_retrofingerprint_exactly_one_target",
+        ),
+    )
