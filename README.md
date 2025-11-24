@@ -71,6 +71,12 @@
     bionexus dump-db --out dumps/bionexus_$(date +%Y%m%d).dump
     ```
 
+    or create a dump directly from Docker:
+
+    ```bash
+    docker exec -t bionexus-db-1 pg_dump -U bionexus -d bionexus -Fc > /path/on/host/bionexus.dump
+    ```
+
 Adminer: http://localhost:8080 (server: db, user: bionexus, db: bionexus)
 
 ## Database schema & migrations

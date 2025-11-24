@@ -7,7 +7,7 @@ from typing import Literal
 
 import numpy as np
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import bindparam, text
+from sqlalchemy import Float, bindparam, text
 from sqlalchemy.dialects.postgresql import BIT
 
 from bionexus.db.engine import SessionLocal
@@ -153,6 +153,8 @@ def retro_search_compound(
     except ImportError:
         logger.error("RetroMol library is not installed. Please install it to use retro_search.")
         return []
+    
+    raise RuntimeError("Please update generator setup to match recent changes in retromol ETL code; centralize generator setup?")
 
     # limit top-k to 500 for performance reasons
     if top_k > 500:
@@ -241,6 +243,7 @@ def retro_search_gbk(
     counted: bool = False,
     cache_dir: Path | str | None = None,
     kmer_sizes: list[int] | None = None,
+    metric: Literal["cosine", "tanimoto"] = "tanimoto",
 ) -> list[dict]:
     """
     Perform a RetroMol fingerprint similarity search on compounds in a GenBank file.
@@ -252,6 +255,7 @@ def retro_search_gbk(
     :param counted: whether to use counted vector similarity or binary vector similarity
     :param cache_dir: optional path to a cache directory for intermediate files
     :param kmer_sizes: optional list of k-mer sizes to use for fingerprint generation
+    :param metric: similarity metric to use ('cosine' or 'tanimoto')
     :return: a list of dictionaries containing compound information and similarity scores
     """
     try:
@@ -263,7 +267,8 @@ def retro_search_gbk(
             FingerprintGenerator,
             NameSimilarityConfig,
             get_kmers,
-            polyketide_family_of
+            polyketide_family_of,
+            # polyketide_ancestors_of
         )
         from retromol.rules import get_path_default_matching_rules
     except ImportError as e:
@@ -281,8 +286,13 @@ def retro_search_gbk(
     if kmer_sizes is None:
         kmer_sizes = [1, 2, 3]
 
+    # TODO: actually retrieve correction version of matching rules; only compare to fingerprints parsed with the same rules version
+
     # Setup generator
-    collapse_by_name = ["glycosylation", "methylation"]
+    collapse_by_name = [
+        "glycosylation", "methylation",
+        *[f"{x}{i}" for x in "ABCDEF" for i in range(1,16)]
+    ]
     cfg = NameSimilarityConfig(family_of=polyketide_family_of, symmetric=True, family_repeat_scale=1)
     generator = FingerprintGenerator(
         matching_rules_yaml=get_path_default_matching_rules(),
@@ -291,37 +301,87 @@ def retro_search_gbk(
     )
     logger.info(f"Initialized RetroMol FingerprintGenerator: {generator}")
 
-    vec_col = "fp_retro_b512_vec_counted" if counted else "fp_retro_b512_vec_binary"
+    if metric == "tanimoto":
+        bit_col = "fp_retro_b512_bit"
+    else:
+        vec_col = "fp_retro_b512_vec_counted" if counted else "fp_retro_b512_vec_binary"
 
-    # Cosine distance operator in pgvector is '<=>'; cosine similarity = 1 - distance
-    sql = text(f"""
-        SELECT
-            rf.id AS id,
-            cr.source AS source,
-            cr.name AS name,
-            (1.0 - (rf.{vec_col} <=> :qv)) AS cosine,
-            c.smiles AS smiles
-        FROM retrofingerprint rf
-        JOIN retromol_compound rmc
-          ON rmc.id = rf.retromol_compound_id
-        JOIN compound c
-          ON c.id = rmc.compound_id
-        LEFT JOIN compound_record cr
-          ON cr.compound_id = c.id
-        ORDER BY rf.{vec_col} <=> :qv, rf.id
-        LIMIT :k
-    """).bindparams(
-        bindparam("qv", type_=Vector(512)),
-        bindparam("k")
-    )
+    # Build SQL query
+    if metric == "cosine":
+        sql = text(f"""
+            SELECT
+                rf.id AS id,
+                cr.source AS source,
+                cr.name AS name,
+                (1.0 - (rf.{vec_col} <=> :qv)) AS score,
+                (1.0 - (rf.{vec_col} <=> :qv)) AS cosine,
+                c.smiles AS smiles
+            FROM retrofingerprint rf
+            JOIN retromol_compound rmc
+            ON rmc.id = rf.retromol_compound_id
+            JOIN compound c
+            ON c.id = rmc.compound_id
+            LEFT JOIN compound_record cr
+            ON cr.compound_id = c.id
+            ORDER BY rf.{vec_col} <=> :qv, rf.id
+            LIMIT :k
+        """).bindparams(
+            bindparam("qv", type_=Vector(512)),
+            bindparam("k")
+        )
+
+    elif metric == "tanimoto":
+        # Exact Jaccard over BIT(512), same form as your jaccard_search_exact
+        sql = text(f"""
+            WITH top_hits AS (
+                SELECT
+                    rf.id,
+                    cr.source,
+                    cr.name,
+                    c.smiles,
+                    CASE
+                    WHEN length(replace((rf.{bit_col} | :qb)::text, '0','')) = 0
+                    THEN 1.0
+                    ELSE length(replace((rf.{bit_col} & :qb)::text, '0',''))::float
+                        / NULLIF(length(replace((rf.{bit_col} | :qb)::text, '0','')), 0)
+                    END AS score
+                FROM retrofingerprint rf
+                JOIN retromol_compound rmc ON rmc.id = rf.retromol_compound_id
+                JOIN compound c ON c.id = rmc.compound_id
+                LEFT JOIN compound_record cr ON cr.compound_id = c.id
+                WHERE rf.{bit_col} IS NOT NULL
+                ORDER BY score DESC
+                LIMIT :k
+            )
+            SELECT id, source, name, score, smiles
+            FROM top_hits
+            WHERE name IS NOT NULL
+            ORDER BY score DESC, source, name, id
+        """).bindparams(
+            bindparam("qb", type_=BIT(512)),
+            bindparam("k"),
+        )
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
 
     targets = parse_region_gbk_file(path, top_level=readout_toplevel)
     fp_labels = []
     fps = []
     for target in targets:
+        kmers = []
+
+        # Get tokenspects, currently only using it to mine for glycosylation
+        tokenspecs = get_default_tokenspecs()
+        mined_tokenspecs = mine_virtual_tokens(target, tokenspecs)
+        found_glycosylation = any(ts["token"] == "glycosyltransferase" for ts in mined_tokenspecs)
+        found_methylation = any(ts["token"] == "methyltransferase" for ts in mined_tokenspecs)
+        if found_glycosylation:
+            kmers.append((("glycosylation", None),))
+        if found_methylation:
+            kmers.append((("methylation", None),))
+
         # NOTE: readout for polyketides doesn't include structures
         fp_labels.append(f"{target.record_id}_{readout_toplevel}_{target.accession}")
-        kmers = []
         for readout in linear_readouts(
             target,
             cache_dir_override=cache_dir_override,
@@ -331,16 +391,16 @@ def retro_search_gbk(
             seq = []
             for module in readout["readout"]:
                 if isinstance(module, PKSModuleReadout):
-                    seq.append((module.module_type.split("_")[1] + "1", None))
+                    seq.append((module.module_type.split("_")[1] + "0", None))
                 elif isinstance(module, NRPSModuleReadout):
                     seq.append((module.substrate_name, module.substrate_smiles))
                 else:
                     raise ValueError(f"Unsupported module type: {type(module)}")
-            
+
             for k in kmer_sizes:
                 kmers.extend(get_kmers(seq, k=k))
 
-        fp = generator.fingerprint_from_kmers(kmers, num_bits=512, counted=counted)
+        fp = generator.fingerprint_from_kmers(kmers, num_bits=512, counted=counted, kmer_weights={1: 2, 2: 4, 3: 8})
         if fp is not None:
             fps.append(fp)
 
@@ -351,30 +411,34 @@ def retro_search_gbk(
     else:
         fps = np.vstack(fps)
 
-    # Collect top_k result for every individiual fingerprint, then merge and sort and return top_k overall
-    best_by_id: dict[int, dict] = {}
+    # return results
+    best_by_id: dict[tuple[int, str | None], dict] = {}
     with SessionLocal() as s:
         for fp_idx, fp in enumerate(fps):
-            qv = [float(x) for x in fp]
-            rows = s.execute(sql, {"qv": qv, "k": top_k}).mappings().all()
+            if metric == "cosine":
+                qv = [float(x) for x in fp]
+                rows = s.execute(sql, {"qv": qv, "k": top_k}).mappings().all()
+            else:  # tanimoto: build 512-bit string (same idea as your exact Jaccard)
+                qb = "".join("1" if float(x) > 0 else "0" for x in fp)  # length 512
+                rows = s.execute(sql, {"qb": qb, "k": top_k}).mappings().all()
+
             for r in rows:
-                rid = r["id"]
-                source = r["source"]
-                cos = float(r["cosine"]) if r["cosine"] is not None else None
-                if rid not in best_by_id or (cos is not None and cos > best_by_id[rid]["cosine"]):
-                    best_by_id[(rid, source)] = {
+                key = (r["id"], r["source"])
+                score = float(r["score"]) if r["score"] is not None else None
+                prev = best_by_id.get(key)
+                if prev is None or (score is not None and score > (prev["score"] or float("-inf"))):
+                    best_by_id[key] = {
                         "record": fp_labels[fp_idx],
                         "id": r["id"],
                         "source": r["source"],
                         "name": r["name"],
-                        "cosine": cos,
+                        "score": score,
+                        "metric": metric,
+                        "cosine": float(r["cosine"]) if metric == "cosine" and r.get("cosine") is not None else None,
                         "smiles": r["smiles"],
                     }
 
-    results = sorted(
-        best_by_id.values(),
-        key=lambda d: (d["cosine"] is not None, d["cosine"]),
-        reverse=True
-    )[:top_k]
-
+    results = sorted(best_by_id.values(),
+                    key=lambda d: (d["score"] is not None, d["score"]),
+                    reverse=True)[:top_k]
     return results

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import subprocess
+import shutil
 import sys
 from pathlib import Path
 
@@ -281,6 +282,16 @@ def cmd_dump_db(args: argparse.Namespace) -> None:
 
     :param args: command-line arguments
     """
+    if shutil.which("pg_dump") is None:
+        console.print("[red]Error:[/] 'pg_dump' is not installed or not found in PATH.\n")
+        console.print(
+            "To install it in your conda environment, run:\n"
+            "    [yellow]conda install -c conda-forge postgresql[/]\n\n"
+            "Or system-wide:\n"
+            "    [yellow]sudo apt-get install postgresql-client[/]  (Ubuntu/Debian)\n"
+            "    [yellow]brew install libpq && brew link --force libpq[/]  (macOS)\n"
+        )
+        sys.exit(1)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     url = os.getenv("BIONEXUS_DB_URL")
     if not url:
@@ -408,6 +419,8 @@ def cmd_search_retro_gbk(args: argparse.Namespace) -> None:
     """
     from bionexus.db.search import retro_search_gbk
 
+    metric = getattr(args, "metric", "cosine")
+
     rows = retro_search_gbk(
         path=args.path,
         top_k=args.top_k,
@@ -415,6 +428,7 @@ def cmd_search_retro_gbk(args: argparse.Namespace) -> None:
         readout_sublevel=args.readout_sublevel,
         counted=getattr(args, "counted", False),
         cache_dir=getattr(args, "cache_dir", None),
+        metric=metric,
     )
     df = pd.DataFrame(rows)
 
@@ -422,17 +436,17 @@ def cmd_search_retro_gbk(args: argparse.Namespace) -> None:
         # console.print(df[["source", "name", "jacc"]])
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("record", style="dim", width=30)
-        table.add_column("compound_id", style="dim", width=6)
+        table.add_column("fp_id", style="dim", width=6)
         table.add_column("source", style="dim", width=10)
         table.add_column("name", style="white", width=30)
-        table.add_column("cosine", justify="right")
+        table.add_column(metric, justify="right")
         for _, row in df.iterrows():
             table.add_row(
                 f"{row['record']}",
                 f"{row['id']}",
                 str(row["source"]),
                 f"[cyan]{row['name']}",
-                f"{row['cosine']:.3f}",
+                f"{row['score']:.3f}",
             )
         console.print(table)
     else:
@@ -564,6 +578,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_search_r_gbk.add_argument("--out", default=None, help="Optional output file (TSV/CSV)")
     p_search_r_gbk.add_argument("--counted", action="store_true", help="Use counted fingerprint for search")
     p_search_r_gbk.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
+    p_search_r_gbk.add_argument("--metric", choices=["cosine", "tanimoto"], default="cosine",
+                                help="Similarity metric to use (default: cosine)")
     p_search_r_gbk.set_defaults(func=cmd_search_retro_gbk)
 
     return p
