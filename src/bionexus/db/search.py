@@ -147,14 +147,39 @@ def retro_search_compound(
         from retromol.fingerprint import (
             FingerprintGenerator,
             NameSimilarityConfig,
-            polyketide_family_of
+            polyketide_family_of,
+            polyketide_ancestors_of,
         )
         from retromol.rules import get_path_default_matching_rules
     except ImportError:
         logger.error("RetroMol library is not installed. Please install it to use retro_search.")
         return []
     
-    raise RuntimeError("Please update generator setup to match recent changes in retromol ETL code; centralize generator setup?")
+    COLLAPSE_BY_NAME = {
+        "glycosylation": ["glycosyltransferase"],
+        "methylation": ["methyltransferase"],
+    }
+    
+    def _setup_fingerprint_generator(yaml_path: str) -> FingerprintGenerator:
+        """
+        Setup and return a FingerprintGenerator instance.
+
+        :return: FingerprintGenerator instance
+        """
+        collapse_by_name: list[str] = list(COLLAPSE_BY_NAME.keys())
+        cfg = NameSimilarityConfig(
+            # family_of=polyketide_family_of,
+            # family_repeat_scale=1,
+            ancestors_of=polyketide_ancestors_of,
+            ancestor_repeat_scale=1,
+            symmetric=True,
+        )
+        generator = FingerprintGenerator(
+            matching_rules_yaml=yaml_path,
+            collapse_by_name=collapse_by_name,
+            name_similarity=cfg
+        )
+        return generator
 
     # limit top-k to 500 for performance reasons
     if top_k > 500:
@@ -168,13 +193,14 @@ def retro_search_compound(
     logger.info(f"RetroMol coverage for input compound: {coverage:.2%}")
 
     # Setup generator
-    collapse_by_name = ["glycosylation", "methylation"]
-    cfg = NameSimilarityConfig(family_of=polyketide_family_of, symmetric=True, family_repeat_scale=1)
-    generator = FingerprintGenerator(
-        matching_rules_yaml=get_path_default_matching_rules(),
-        collapse_by_name=collapse_by_name,
-        name_similarity=cfg
-    )
+    # collapse_by_name = ["glycosylation", "methylation"]
+    # cfg = NameSimilarityConfig(family_of=polyketide_family_of, symmetric=True, family_repeat_scale=1)
+    # generator = FingerprintGenerator(
+    #     matching_rules_yaml=get_path_default_matching_rules(),
+    #     collapse_by_name=collapse_by_name,
+    #     name_similarity=cfg
+    # )
+    generator = _setup_fingerprint_generator(get_path_default_matching_rules())
     logger.info(f"Initialized RetroMol FingerprintGenerator: {generator}")
 
     # Calculate fingerprints of shape (N, 512)
@@ -182,6 +208,10 @@ def retro_search_compound(
     if fps is None or fps.shape[0] == 0:
         logger.warning("No RetroMol fingerprints could be generated for the input compound.")
         return []
+    
+    for fp in fps:
+        print(fp.sum())
+    exit("CHK")
     
     vec_col = "fp_retro_b512_vec_counted" if counted else "fp_retro_b512_vec_binary"
 
