@@ -276,6 +276,18 @@ def cmd_compute_fp_retro_compound(args: argparse.Namespace) -> None:
     console.print(f"Computed RetroMol fingerprints for {done} entries (batch={args.batch})")
 
 
+def cmd_compute_fp_retro_gbk(args: argparse.Namespace) -> None:
+    """
+    Compute biosynthetic fingerprints for GenBank records.
+
+    :param args: command-line arguments
+    """
+    from bionexus.etl.retromol import backfill_retro_fingerprints_gbk
+
+    done = backfill_retro_fingerprints_gbk(cache_dir=args.cache_dir, batch=args.batch, recompute=args.recompute, paras_model_path=args.paras)
+    console.print(f"Computed RetroMol fingerprints for {done} GenBank records (batch={args.batch})")
+
+
 def cmd_dump_db(args: argparse.Namespace) -> None:
     """
     Dump the database to a pg_dump custom format file.
@@ -545,6 +557,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_do.add_argument("--batch", type=int, default=2000)
     p_do.add_argument("--recompute", action="store_true", help="Force recomputation")
     p_do.set_defaults(func=cmd_compute_fp_retro_compound)
+
+    p_gbk = sub.add_parser("compute-fp-retro-gbk",help="Compute biosynthetic fingerprints for GenBank records")
+    p_gbk.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
+    p_gbk.add_argument("--batch", type=int, default=2000)
+    p_gbk.add_argument("--recompute", action="store_true", help="Force recomputation")
+    p_gbk.add_argument("--paras", required=True, help="Path to the PARAS model file")
+    p_gbk.set_defaults(func=cmd_compute_fp_retro_gbk)
 
     p_dump = sub.add_parser("dump-db", help="Write pg_dump custom format")
     p_dump.add_argument("--out", default="dumps/bionexus.dump")
