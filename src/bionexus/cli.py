@@ -19,6 +19,7 @@ from sqlalchemy import text
 from bionexus.config import DEFAULT_MIBIG_JSON_URL, DEFAULT_NPATLAS_URL
 from bionexus.db.engine import engine
 from bionexus.db.models import Base
+from bionexus.etl.sources.retromol import parse_compounds_with_retromol
 from bionexus.utils.logging import setup_logging
 from bionexus.utils.net import ensure_download, extract_if_needed
 
@@ -252,6 +253,25 @@ def cmd_parse_compounds(args: argparse.Namespace) -> None:
     console.print(f"Used RetroMol to parse {n_parsed} compounds")
 
 
+def cmd_parse_gbks(args: argparse.Namespace) -> None:
+    """
+    Parse GenBank files using BioCracker.
+
+    :param args: command-line arguments
+    """
+    from bionexus.etl.sources.biocracker import parse_gbks_with_biocracker
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else Path("./biocracker_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    n_parsed = parse_gbks_with_biocracker(
+        cache_dir=cache_dir,
+        recompute=args.recompute,
+        chunk_size=args.batch,
+        workers=args.workers,
+    )
+    console.print(f"Used BioCracker to parse {n_parsed} GBK files")
+
+
 def cmd_compute_fp_morgan(args: argparse.Namespace) -> None:
     """
     Compute Morgan fingerprints for compounds with SMILES.
@@ -284,7 +304,7 @@ def cmd_compute_fp_retro_gbk(args: argparse.Namespace) -> None:
     """
     from bionexus.etl.retromol import backfill_retro_fingerprints_gbk
 
-    done = backfill_retro_fingerprints_gbk(cache_dir=args.cache_dir, batch=args.batch, recompute=args.recompute, paras_model_path=args.paras)
+    done = backfill_retro_fingerprints_gbk(cache_dir=args.cache_dir, batch=args.batch, recompute=args.recompute)
     console.print(f"Computed RetroMol fingerprints for {done} GenBank records (batch={args.batch})")
 
 
@@ -467,6 +487,12 @@ def cmd_search_retro_gbk(args: argparse.Namespace) -> None:
         console.print(f"Wrote {len(df)} results to [green]{args.out}[/]")
 
 
+def cmd_benchmark(args: argparse.Namespace) -> None:
+    from bionexus.db.benchmark import benchmark
+    benchmark(out_dir=args.out)
+    console.print("Done")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """
     Build the argument parser for the Bionexus CLI.
@@ -547,6 +573,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_parse_compounds.add_argument("--workers", type=int, default=1, help="Number of parallel workers to use")
     p_parse_compounds.set_defaults(func=cmd_parse_compounds)
 
+    p_parse_gbks = sub.add_parser("parse-gbks", help="Parse GenBank files with BioCracker")
+    p_parse_gbks.add_argument("--cache-dir", default=None, help="Cache/work dir for BioCracker")
+    p_parse_gbks.add_argument("--batch", type=int, default=2000)
+    p_parse_gbks.add_argument("--recompute", action="store_true", help="Force recomputation for all GBK files")
+    p_parse_gbks.add_argument("--workers", type=int, default=1, help="Number of parallel workers to use")
+    p_parse_gbks.add_argument("--to-jsonl", action="store_true", help="Output results to JSONL format into cache_dir")
+    p_parse_gbks.set_defaults(func=cmd_parse_gbks)
+
     p_fp = sub.add_parser("compute-fp-morgan", help="Compute fingerprints for compounds with SMILES")
     p_fp.add_argument("--batch", type=int, default=2000)
     p_fp.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
@@ -562,7 +596,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_gbk.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
     p_gbk.add_argument("--batch", type=int, default=2000)
     p_gbk.add_argument("--recompute", action="store_true", help="Force recomputation")
-    p_gbk.add_argument("--paras", required=True, help="Path to the PARAS model file")
     p_gbk.set_defaults(func=cmd_compute_fp_retro_gbk)
 
     p_dump = sub.add_parser("dump-db", help="Write pg_dump custom format")
@@ -600,6 +633,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_search_r_gbk.add_argument("--metric", choices=["cosine", "tanimoto"], default="cosine",
                                 help="Similarity metric to use (default: cosine)")
     p_search_r_gbk.set_defaults(func=cmd_search_retro_gbk)
+
+    benchmark = sub.add_parser("benchmark", help="Benchmark cross-modal retrieval")
+    benchmark.add_argument("--out", required=True, help="Output directory for benchmark results")
+    benchmark.set_defaults(func=cmd_benchmark)
 
     return p
 

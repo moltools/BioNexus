@@ -5,16 +5,22 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Generator, Optional
+import re
 
 import joblib
 import numpy as np
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, func, insert
 from sqlalchemy.dialects.postgresql import insert
 from tqdm import tqdm
 
 from bionexus.config import default_cache_dir
 from bionexus.db.engine import SessionLocal
-from bionexus.db.models import RetroMolCompound, Ruleset, RetroFingerprint
+from bionexus.db.models import (
+    BioCrackerGenBank,
+    RetroMolCompound,
+    Ruleset,
+    RetroFingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,41 +237,6 @@ def backfill_retro_fingerprints(
     return done
 
 
-
-
-def get_paras_model(paras_model_path: Optional[str] = None) -> object | None:
-    """
-    Load and return the PARAS model from disk, caching it in memory.
-    
-    :return: the loaded PARAS model, or None if not found
-    """
-    # Check if model is already cached
-    if "paras" in _model_cache:
-        return _model_cache["paras"]
-
-    # Check if model path is defined
-    if paras_model_path:
-        # Model path is defined; attempt to load the model
-        path = Path(paras_model_path)
-        if path.is_file():
-            _model_cache["paras"] = joblib.load(path)
-        else:
-            _model_cache["paras"] = None
-        return _model_cache["paras"]
-    else:
-        # Model path is not defined
-        return None
-    
-
-def get_unique_identifier() -> str:
-    """
-    Generate a unique identifier string.
-    
-    :return: unique identifier as a string
-    """
-    return str(uuid.uuid4())
-
-
 def kmerize_sequence(sequence: list[Any], k: int) -> list[list[Any]]:
     """
     Generate k-mers from a given sequence (forward and backward).
@@ -290,137 +261,300 @@ def kmerize_sequence(sequence: list[Any], k: int) -> list[list[Any]]:
     return kmers
 
 
+TOKENSPEC_EPOXIDATION: dict = {
+    "any": {
+        # Direct epoxidation-related names
+        "epoxidase",
+        "epoxygenase",
+        "epoxidation",
+        "epoxide-forming monooxygenase",
+        "epoxide hydrolase",  # often annotated in same neighbourhood
+    },
+    "rx": [
+        # epoxidase / epoxygenase variants
+        re.compile(r"\b(epoxidase|epoxygenase)\b", re.I),
+        re.compile(r"\bepoxidation\b", re.I),
+        # epoxy* with oxygenase/monooxygenase
+        re.compile(r"\bepoxy\w*(monooxygenase|oxygenase)\b", re.I),
+        # Some classic style annotations ("styrene monooxygenase", etc.) with epoxide context
+        re.compile(r"\bstyrene\s+monooxygenase\b", re.I),
+    ],
+    "bonus_if": {
+        # Typical cofactors / tailoring context
+        "FAD",
+        "FMN",
+        "flavin",
+        "monooxygenase",
+        "P450",
+        "cytochrome P450",
+        "oxidoreductase",
+        "NRPS",
+        "PKS",
+        "T1PKS",
+        "trans-AT",
+    },
+    "weight": 1.0,
+    "bonus_weight": 0.3,
+    # Require at least a reasonably strong signal; most true epoxidases
+    # will have 'epoxidase'/'epoxidation' or similar in the annotation.
+    "min_score": 2.5,
+}
+
+
+TOKENSPEC_AMINATION: dict = {
+    "any": {
+        "aminotransferase",
+        "amine transferase",
+        "transaminase",
+        "amination",
+        "aminating enzyme",
+        "aminase",
+    },
+    "rx": [
+        re.compile(r"\baminotransferase\b", re.I),
+        re.compile(r"\btransaminase\b", re.I),
+        re.compile(r"\bomega[-\s]?transaminase\b", re.I),
+        # PLP-dependent is a strong hint when combined with above
+        re.compile(r"\bPLP[-\s]?dependent\b", re.I),
+    ],
+    "bonus_if": {
+        "PLP",
+        "pyridoxal phosphate",
+        "pyridoxamine",
+        "beta-amino",
+        "amino transfer",
+        "amino group transfer",
+        "NRPS",
+        "PKS",
+        "T1PKS",
+    },
+    "weight": 1.0,
+    "bonus_weight": 0.3,
+    # One strong direct hit (e.g. 'aminotransferase') + maybe a bonus
+    # should be enough to fire, so keep threshold modest.
+    "min_score": 2.0,
+}
+
+
+# --- Halogenation split by halogen ---
+
+TOKENSPEC_FLUORINATION: dict = {
+    "any": {
+        "fluorinase",
+        "fluorination",
+        "fluorinating enzyme",
+        "fluorinated",
+    },
+    "rx": [
+        re.compile(r"\bfluorinase\b", re.I),
+        re.compile(r"\bfluorinat(e|ing|ion|ed)\b", re.I),
+        # specific halogenases with fluoro-, but exclude dehalogenases
+        re.compile(r"(?<!de)\bfluoro\w*halogenase\b", re.I),
+    ],
+    "bonus_if": {
+        "FAD",
+        "FMN",
+        "flavin",
+        "monooxygenase",
+        "oxidoreductase",
+        "fluorination",
+        "PKS",
+        "NRPS",
+        "trans-AT",
+        "tAT",
+    },
+    "weight": 1.0,
+    "bonus_weight": 0.4,
+    "min_score": 3.0,
+}
+
+
+TOKENSPEC_CHLORINATION: dict = {
+    "any": {
+        "chlorinase",
+        "chlorination",
+        "chlorinated",
+    },
+    "rx": [
+        re.compile(r"\bchlorinase\b", re.I),
+        re.compile(r"\bchlorinat(e|ing|ion|ed)\b", re.I),
+        # halogenase explicitly tied to chloro- context, avoid dehalogenase
+        re.compile(r"(?<!de)\bchloro\w*halogenase\b", re.I),
+        # classic tryptophan chlorinase style annotations
+        re.compile(r"\btryptophan\s*\d?-?(chlorinase|chlorinase-like)\b", re.I),
+    ],
+    "bonus_if": {
+        "FAD",
+        "FMN",
+        "flavin",
+        "monooxygenase",
+        "oxidoreductase",
+        "chlorination",
+        "PKS",
+        "NRPS",
+        "trans-AT",
+        "tAT",
+    },
+    "weight": 1.0,
+    "bonus_weight": 0.4,
+    "min_score": 3.0,
+}
+
+
+TOKENSPEC_BROMINATION: dict = {
+    "any": {
+        "brominase",
+        "bromination",
+        "brominated",
+    },
+    "rx": [
+        re.compile(r"\bbrominase\b", re.I),
+        re.compile(r"\bbrominat(e|ing|ion|ed)\b", re.I),
+        re.compile(r"(?<!de)\bbromo\w*halogenase\b", re.I),
+        re.compile(r"\btryptophan\s*\d?-?brominase\b", re.I),
+    ],
+    "bonus_if": {
+        "FAD",
+        "FMN",
+        "flavin",
+        "monooxygenase",
+        "oxidoreductase",
+        "bromination",
+        "PKS",
+        "NRPS",
+        "trans-AT",
+        "tAT",
+    },
+    "weight": 1.0,
+    "bonus_weight": 0.4,
+    "min_score": 3.0,
+}
+
+
+TOKENSPEC_IODINATION: dict = {
+    "any": {
+        "iodinase",
+        "iodination",
+        "iodinated",
+    },
+    "rx": [
+        re.compile(r"\biodinase\b", re.I),
+        re.compile(r"\biodinat(e|ing|ion|ed)\b", re.I),
+        re.compile(r"(?<!de)\biodo\w*halogenase\b", re.I),
+    ],
+    "bonus_if": {
+        "FAD",
+        "FMN",
+        "flavin",
+        "monooxygenase",
+        "oxidoreductase",
+        "iodination",
+        "PKS",
+        "NRPS",
+        "trans-AT",
+        "tAT",
+    },
+    "weight": 1.0,
+    "bonus_weight": 0.4,
+    "min_score": 3.0,
+}
+
+
 def _compute_gene_cluster(
     cache_dir: Path | str,
     fp_generator,
-    gbk_str,
-    paras_model_path: Path | str | None = None,
-    top_level: str = "cand_cluster",
+    targets,
+    biocracker_genbank_id: int,
 ):
     try:
-        from biocracker.antismash import parse_region_gbk_file
         from biocracker.readout import (
             NRPSModuleReadout,
             PKSModuleReadout,
             linear_readouts as biocracker_linear_readouts,
         )
         from biocracker.text_mining import get_default_tokenspecs, mine_virtual_tokens
-        from retromol.chem import smiles_to_mol, mol_to_fpr
     except ImportError:
         logger.error("biocracker package not found")
         return
+    
 
-    with tempfile.NamedTemporaryFile(delete=True, suffix=".gbk") as temp_gbk_file:
-        temp_gbk_file.write(gbk_str.encode("utf-8"))
-        temp_gbk_file.flush()
-        gbk_path = temp_gbk_file.name
-        tokenspecs = get_default_tokenspecs()
-        targets = parse_region_gbk_file(gbk_path, top_level=top_level)  # region or cand_cluster
+    def get_tokenspecs():
+        default = get_default_tokenspecs()
+        default["epoxidation"] = TOKENSPEC_EPOXIDATION
+        default["amination"] = TOKENSPEC_AMINATION
+        default["fluorination"] = TOKENSPEC_FLUORINATION
+        default["chlorination"] = TOKENSPEC_CHLORINATION
+        default["bromination"] = TOKENSPEC_BROMINATION
+        default["iodination"] = TOKENSPEC_IODINATION
+        return default
 
-    level = "gene"
-    avg_pred_vals, fps, linear_readouts = [], [], []
+    tokenspecs = get_tokenspecs()
+    mappings: list[dict[str, Any]] = []
+
     for target in targets:
-        pred_vals, raw_kmers = [], []
+        raw_kmers: list[list[Any]] = []
+
+        if not target:
+            continue
 
         # Mine for tokenspecs (i.e., family tokens)
-        for mined_tokenspec in mine_virtual_tokens(target, tokenspecs):
-            if token_spec := mined_tokenspec.get("token"):
-                for token_name, values in COLLAPSE_BY_NAME.items():
-                    if token_spec in values:
-                        raw_kmers.append([(token_name, None)])
-        
-        # Optionally load PARAS model
-        paras_model = get_paras_model(paras_model_path)
+        if not (isinstance(target, list) and target and isinstance(target[0], dict)):
+            for mined_tokenspec in mine_virtual_tokens(target, tokenspecs):
+                if token_spec := mined_tokenspec.get("token"):
+                    for token_name, values in COLLAPSE_BY_NAME.items():
+                        if token_spec in values:
+                            raw_kmers.append([(token_name, None)])
 
-        # Exctract module kmers
-        for readout in biocracker_linear_readouts(
-            target,
-            model=paras_model,
-            cache_dir_override=cache_dir,
-            level="gene",
-            pred_threshold=0.1,
-        ):
-            kmer, linear_readout = [], []
-            for module in readout["readout"]:
-                match module:
-                    case PKSModuleReadout(module_type="PKS_A") as m:
-                        kmer.append(("A", None))
-                        pred_vals.append(1.0)
-                        linear_readout.append({
-                            "id": get_unique_identifier(),
-                            "name": "A",
-                            "displayName": None,
-                            "tags": [],
-                            "smiles": None,
-                            "morganfingerprint2048r2": None,
-                        })
-                    case PKSModuleReadout(module_type="PKS_B") as m:
-                        kmer.append(("B", None))
-                        pred_vals.append(1.0)
-                        linear_readout.append({
-                            "id": get_unique_identifier(),
-                            "name": "B",
-                            "displayName": None,
-                            "tags": [],
-                            "smiles": None,
-                            "morganfingerprint2048r2": None,
-                        })
-                    case PKSModuleReadout(module_type="PKS_C") as m:
-                        kmer.append(("C", None))
-                        pred_vals.append(1.0)
-                        linear_readout.append({
-                            "id": get_unique_identifier(),
-                            "name": "C",
-                            "displayName": None,
-                            "tags": [],
-                            "smiles": None,
-                            "morganfingerprint2048r2": None,
-                        })
-                    case PKSModuleReadout(module_type="PKS_D") as m:
-                        kmer.append(("D", None))
-                        pred_vals.append(1.0)
-                        linear_readout.append({
-                            "id": get_unique_identifier(),
-                            "name": "D",
-                            "displayName": None,
-                            "tags": [],
-                            "smiles": None,
-                            "morganfingerprint2048r2": None,
-                        })
-                    case NRPSModuleReadout() as m:
-                        substrate_name = m.get("substrate_name", None)
-                        substrate_smiles = m.get("substrate_smiles", None)
-                        substrate_score = m.get("score", 0.0)
-                        kmer.append((substrate_name, substrate_smiles))
-                        pred_vals.append(substrate_score)
+            # Extract module kmers directly from BioCracker readouts
+            for readout in biocracker_linear_readouts(
+                target,
+                model=None,
+                cache_dir_override=cache_dir,
+                level="gene",
+                pred_threshold=0.1,
+            ):
+                kmer = []
+                for module in readout["readout"]:
+                    match module:
+                        case PKSModuleReadout(module_type="PKS_A") as m: kmer.append(("A", None))
+                        case PKSModuleReadout(module_type="PKS_B") as m: kmer.append(("B", None))
+                        case PKSModuleReadout(module_type="PKS_C") as m: kmer.append(("C", None))
+                        case PKSModuleReadout(module_type="PKS_D") as m: kmer.append(("D", None))
+                        case NRPSModuleReadout() as m:
+                            substrate_name = m.get("substrate_name", None)
+                            substrate_smiles = m.get("substrate_smiles", None)
+                            kmer.append((substrate_name, substrate_smiles))
+                        case _: raise ValueError("Unknown module readout type")
 
-                        # Calculate fingerprint for SMILES if present
-                        if substrate_smiles:
-                            clean_mol = smiles_to_mol(substrate_smiles)
-                            fp_bits = mol_to_fpr(clean_mol, rad=2, nbs=2048).reshape(-1).astype(np.uint8)
-                        else:
-                            fp_bits = None
+                if len(kmer) > 0:
+                    raw_kmers.append(kmer)
+        else:
+            # Use cached BioCracker readouts stored on the BioCrackerGenBank record
+            for readout in target:
+                kmer = []
+                for module in readout.get("readout", []):
+                    module_type = module.get("module_type")
+                    match module_type:
+                        case "PKS_A": kmer.append(("A", None))
+                        case "PKS_B": kmer.append(("B", None))
+                        case "PKS_C": kmer.append(("C", None))
+                        case "PKS_D": kmer.append(("D", None))
+                        # case PKSModuleReadout(kind="PKS_module", module_type="UNCLASSIFIED") as m: kmer.append(("A", None))
+                        case "UNCLASSIFIED": kmer.append(("A", None))
+                        case _:
+                            substrate_name = module.get("substrate_name", None)
+                            substrate_smiles = module.get("substrate_smiles", None)
+                            # if substrate_name is None and substrate_smiles is None:
+                            #     raise ValueError("Unknown module readout type")
+                            if substrate_smiles == "O=NN(O)CCC[C@H](N)(C(=O)O":
+                                substrate_smiles = "OC(C(CCCN(N=O)O)N)=O"
+                            kmer.append((substrate_name, substrate_smiles))
 
-                        linear_readout.append({
-                            "id": get_unique_identifier(),
-                            "name": substrate_name or "unknown",
-                            "displayName": None,
-                            "tags": [],
-                            "smiles": substrate_smiles,
-                            "morganfingerprint2048r2": fp_bits
-                        })
-                    case _: raise ValueError("Unknown module readout type")
+                if len(kmer) > 0:
+                    raw_kmers.append(kmer)
 
-            if len(kmer) > 0:
-                raw_kmers.append(kmer)
-
-            if len(linear_readout) >= 2:  # skip too short
-                linear_readouts.append({
-                    "id": get_unique_identifier(),
-                    "name": f"readout_{len(linear_readouts)+1}",
-                    "parentSmilesTagged": None,
-                    "sequence": linear_readout,
-                })
+        if not raw_kmers:
+            continue
 
         # Mine for kmers of lengths 1 to 3
         kmers = []
@@ -429,23 +563,40 @@ def _compute_gene_cluster(
             for raw_kmer in raw_kmers:
                 kmers.extend(kmerize_sequence(raw_kmer, k))
 
+        if not kmers:
+            continue
+
         # Generate fingerprint
-        fp: np.ndarray = fp_generator.fingerprint_from_kmers(kmers, num_bits=512, counted=False)
+        fps_counted: np.ndarray | None = fp_generator.fingerprint_from_kmers(
+            kmers,
+            num_bits=512,
+            counted=True,
+        )
+        if fps_counted is None:
+            continue
+        fps_counted = np.atleast_2d(fps_counted)
 
-        # Calculate average prediction value
-        avg_pred_val = float(np.mean(pred_vals)) if len(pred_vals) > 0 else 0.0
-        
-        avg_pred_vals.append(avg_pred_val)
-        fps.append(fp)
+        for fp_counted in fps_counted:
+            fp_binary = (fp_counted > 0).astype(np.int8)
+            bitstr = "".join(str(int(b)) for b in fp_binary.flatten().tolist())
+            pop = int(fp_binary.sum())
 
-    return avg_pred_vals, fps, linear_readouts
+            mappings.append({
+                "retromol_compound_id": None,
+                "biocracker_genbank_id": biocracker_genbank_id,
+                "fp_retro_b512_bit": bitstr,
+                "fp_retro_b512_pop": pop,
+                "fp_retro_b512_vec_binary": [float(x) for x in fp_binary.flatten().tolist()],
+                "fp_retro_b512_vec_counted": [float(x) for x in fp_counted.flatten().tolist()],
+            })
+
+    return mappings
 
 
 def backfill_retro_fingerprints_gbk(
     cache_dir: Path | str, 
     batch: int = 1000,
     recompute: bool = False,
-    paras_model_path: Optional[Path | str] = None,
 ) -> int:
     """
     Compute RetroMol biosynthetic fingerptins for GenBank records.
@@ -453,10 +604,10 @@ def backfill_retro_fingerprints_gbk(
     :param cache_dir: directory to use for caching input/output files
     :param batch: numbe rof compounds to process per transaction
     :param recompute: whether to recompute fingerprints even if they exist
-    :param paras_model_path: optional path to the PARAS model file
     :return: total number of results updated
     """
     done = 0
+    total_inserted = 0
     last_id = 0
 
     if cache_dir is None:
@@ -471,15 +622,61 @@ def backfill_retro_fingerprints_gbk(
         logger.error("retromol and/or biocracker package(s) not found.")
 
     fp_generator = _setup_fingerprint_generator(get_path_default_matching_rules())
-    print(fp_generator)
 
-    total_inserted = 0
     with SessionLocal() as s:
-        # while True:
-        #     q = select
-        pass
 
-    # TODO: update so we save intermediate results in biocracker_genbank (e.g., paras predictions)
-    # TODO: read out JSONs biocracker_genbank readouts and parse into fingerprinta for retrofingerprint and link biocracker_genbank ID
+        # compute total for tqdm
+        count_q = select(func.count()).select_from(BioCrackerGenBank)
+        if not recompute:
+            count_q = count_q.where(~BioCrackerGenBank.retrofingerprints.any())
+        total_to_process = s.scalars(count_q).first() or 0
+        pbar = tqdm(total=total_to_process, desc="Computing RetroMol fingerprints for BioCrackerGenBank")
+
+        while True:
+            q = (
+                select(BioCrackerGenBank)
+                .where(BioCrackerGenBank.id > last_id)
+                .order_by(BioCrackerGenBank.id)
+                .limit(batch)
+            )
+            if not recompute:
+                q = q.where(~BioCrackerGenBank.retrofingerprints.any())
+
+            rows = s.scalars(q).all()
+            if not rows:
+                break
+
+            deleted_existing = False
+            batch_ids = [r.id for r in rows]
+            if recompute and batch_ids:
+                s.execute(
+                    delete(RetroFingerprint).where(
+                        RetroFingerprint.biocracker_genbank_id.in_(batch_ids)
+                    )
+                )
+                deleted_existing = True
+
+            batch_inserted = 0
+
+            for gbk in rows:
+                targets = gbk.result_json.get("targets") or []
+                if targets:
+                    mappings = _compute_gene_cluster(cache_dir, fp_generator, targets, gbk.id)
+                    if mappings:
+                        s.execute(insert(RetroFingerprint), mappings)
+                        inserted = len(mappings)
+                        batch_inserted += inserted
+                        total_inserted += inserted
+                        done += 1
+
+                pbar.update(1)
+
+            if deleted_existing or batch_inserted:
+                s.commit()
+            last_id = rows[-1].id
+
+        pbar.close()
+
+    logger.info(f"Fingerprint backfill complete: {done} BioCrackerGenBank entries updated, {total_inserted} fingerprints inserted")
 
     return done
