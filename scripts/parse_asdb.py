@@ -70,7 +70,11 @@ def _process_file(
             if acc:
                 accessions.add(acc)
 
-            readouts_for_target.append(readout_dict)
+            # Keep the full record alongside the readout (matches repo helpers)
+            readouts_for_target.append({
+                "rec": rec,
+                "readout": readout_dict.get("readout", []),
+            })
 
         if readouts_for_target:
             all_targets.append(readouts_for_target)
