@@ -234,6 +234,18 @@ def cmd_annot_npc(args: argparse.Namespace) -> None:
     console.print(f"Used NPClassifier to add {n_annotated} annotations for compounds")
 
 
+def cmd_annot_chebi(args: argparse.Namespace) -> None:
+    """
+    Annotate compounds without ChEBI annotations.
+
+    :param args: command-line arguments
+    """
+    from bionexus.etl.sources.chebi import annotate_with_chebi
+
+    n_annotated = annotate_with_chebi(args.recompute, chunk_size=args.batch)
+    console.print(f"Used ChEBI to add {n_annotated} annotations for compounds")
+
+
 def cmd_parse_compounds(args: argparse.Namespace) -> None:
     """
     Parse compounds from the database using RetroMol.
@@ -565,6 +577,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_annot_npc.add_argument("--batch", type=int, default=2000)
     p_annot_npc.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
     p_annot_npc.set_defaults(func=cmd_annot_npc)
+
+    p_annot_chebi = sub.add_parser("annotate-chebi", help="Annotate ChEBI annotations for compounds without one")
+    p_annot_chebi.add_argument("--batch", type=int, default=2000)
+    p_annot_chebi.add_argument("--recompute", action="store_true", help="Force recomputation for all compounds")
+    p_annot_chebi.set_defaults(func=cmd_annot_chebi)
 
     p_parse_compounds = sub.add_parser("parse-compounds", help="Parse compounds from database with RetroMol")
     p_parse_compounds.add_argument("--cache-dir", default=None, help="Cache/work dir for RetroMol")
