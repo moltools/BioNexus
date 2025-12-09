@@ -8,59 +8,74 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from tqdm import tqdm
 
-
-# Regex to capture all product qualifiers
+# Regex to capture all product qualifiers on a line
 PRODUCT_RE = re.compile(r'/product="([^"]*)"', re.IGNORECASE)
 
 
-def _iter_gbk_files(root: Path, exts: Sequence[str]) -> Iterable[Path]:
-    """Yield all files with specified extensions."""
-    exts = {e.lower() for e in exts}
-    for p in root.rglob("*"):
-        if p.is_file() and p.suffix.lower() in exts:
-            yield p
+def _iter_gbk_files(root: Path, exts: Sequence[str]):
+    """Greedily walk the tree and yield matching files as we see them."""
+    exts = tuple(ext.lower() for ext in exts)
+    root = str(root)
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            # simple suffix match, case-insensitive
+            lower_name = name.lower()
+            if lower_name.endswith(exts):
+                yield Path(dirpath) / name
 
 
-def _file_matches(
-    gbk_path: str,
-    products: Sequence[str],
-) -> dict | None:
+def _file_matches(gbk_path: Path, products: Sequence[str]) -> dict | None:
     """
-    Return match info if the GBK contains cand_cluster/protocluster and has a product EXACTLY equal
-    to one of the given search terms (case-insensitive).
+    Return match info if the GBK contains cand_cluster/protocluster and has a product
+    EXACTLY equal to one of the given search terms (case-insensitive).
+    Stream + early exit.
     """
-    path = Path(gbk_path)
+    has_cluster = False
+    matched: set[str] = set()
 
     try:
-        text = path.read_text(errors="ignore")
+        with gbk_path.open("r", errors="ignore") as fh:
+            for line in fh:
+                lower = line.lower()
+
+                # detect cluster keywords
+                if not has_cluster and ("cand_cluster" in lower or "protocluster" in lower):
+                    has_cluster = True
+                    if matched:
+                        return {
+                            "file": gbk_path.name,
+                            "path": str(gbk_path),
+                            "matched_products": sorted(matched),
+                        }
+
+                # detect product qualifiers
+                if '/product="' in line:
+                    for m in PRODUCT_RE.finditer(line):
+                        prod_val = m.group(1).strip().lower()
+                        if prod_val in products:
+                            matched.add(prod_val)
+                            if has_cluster:
+                                return {
+                                    "file": gbk_path.name,
+                                    "path": str(gbk_path),
+                                    "matched_products": sorted(matched),
+                                }
+
+        if has_cluster and matched:
+            return {
+                "file": gbk_path.name,
+                "path": str(gbk_path),
+                "matched_products": sorted(matched),
+            }
+
+        return None
+
     except Exception as exc:
-        return {"error": f"read failed: {exc}", "file": gbk_path}
-
-    lower = text.lower()
-
-    # quick skip
-    if "cand_cluster" not in lower and "protocluster" not in lower:
-        return None
-
-    # extract all /product="..."`
-    found_products = PRODUCT_RE.findall(text)
-    found_products_norm = {fp.strip().lower() for fp in found_products}
-
-    # find exact matches
-    matched = sorted(fp for fp in found_products_norm if fp in products)
-
-    if not matched:
-        return None
-
-    return {
-        "file": path.name,
-        "path": str(path),
-        "matched_products": matched,
-    }
+        return {"error": f"read failed: {exc}", "file": str(gbk_path), "detail": str(exc)}
 
 
 def cli() -> argparse.Namespace:
@@ -72,7 +87,7 @@ def cli() -> argparse.Namespace:
         "--products",
         nargs="+",
         required=True,
-        help='Exact product terms to match (case-insensitive)',
+        help="Exact product terms to match (case-insensitive)",
     )
     parser.add_argument(
         "--exts",
@@ -88,43 +103,40 @@ def main() -> None:
     input_dir: Path = args.input_dir
     output_dir: Path = args.output_dir
 
-    # normalize to lowercase for exact matching
     products = [p.lower() for p in args.products]
 
     if not input_dir.exists():
         raise SystemExit(f"Input directory does not exist: {input_dir}")
 
-    files = list(_iter_gbk_files(input_dir, args.exts))
-    if not files:
-        raise SystemExit("No GenBank files found.")
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
     copied = 0
     errors = 0
+    scanned = 0
 
-    with tqdm(total=len(files), desc="Scanning GBKs", unit="file") as pbar:
-        for path in files:
-            result = _file_matches(str(path), products)
+    # No total: just chew through files as we discover them
+    with tqdm(desc="Scanning GBKs", unit="file") as pbar:
+        for path in _iter_gbk_files(input_dir, args.exts):
+            scanned += 1
+            result = _file_matches(path, products)
+
+            if result:
+                if "error" in result:
+                    errors += 1
+                else:
+                    try:
+                        shutil.copy2(result["path"], output_dir / result["file"])
+                        copied += 1
+                    except Exception:
+                        errors += 1
+
             pbar.update(1)
-
-            if not result:
-                continue
-
-            if "error" in result:
-                errors += 1
-                pbar.set_postfix(copied=copied, errors=errors)
-                continue
-
-            try:
-                shutil.copy2(result["path"], output_dir / result["file"])
-                copied += 1
-            except Exception as exc:
-                errors += 1
-
             pbar.set_postfix(copied=copied, errors=errors)
 
-    print(f"\nDone. Copied: {copied}, errors: {errors}, total scanned: {len(files)}")
+    if scanned == 0:
+        print("No GenBank files found with the given extensions.")
+    else:
+        print(f"\nDone. Copied: {copied}, errors: {errors}, total scanned: {scanned}")
 
 
 if __name__ == "__main__":
