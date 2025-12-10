@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Parse a directory of GenBank files with BioCracker and dump readouts to JSONL."""
 
 from __future__ import annotations
@@ -7,6 +8,7 @@ import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from itertools import islice
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -18,9 +20,11 @@ if str(ROOT_DIR) not in sys.path:
 
 
 def _iter_gbk_files(root: Path, exts: Sequence[str]) -> Iterable[Path]:
-    """Yield GenBank files under root matching extensions."""
-    for ext in exts:
-        yield from root.rglob(f"*{ext}")
+    """Yield GenBank files under root matching extensions (single tree walk)."""
+    exts = {e.lower() for e in exts}
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix.lower() in exts:
+            yield p
 
 
 def _process_file(
@@ -70,7 +74,6 @@ def _process_file(
             if acc:
                 accessions.add(acc)
 
-            # Keep the full record alongside the readout (matches repo helpers)
             readouts_for_target.append({
                 "rec": rec,
                 "readout": readout_dict.get("readout", []),
@@ -131,6 +134,12 @@ def cli() -> argparse.Namespace:
         default=8,
         help="Chunksize for process pool mapping",
     )
+    parser.add_argument(
+        "--discover-batch",
+        type=int,
+        default=1000,
+        help="Number of files to queue at a time before dispatching to workers",
+    )
     return parser.parse_args()
 
 
@@ -140,40 +149,54 @@ def main() -> None:
     if not input_dir.exists():
         raise SystemExit(f"Input directory does not exist: {input_dir}")
 
-    files = list(_iter_gbk_files(input_dir, args.exts))
-    if not files:
-        raise SystemExit("No GenBank files found.")
-
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    total = len(files)
     processed = 0
     successes = 0
     errors = 0
 
+    cache_arg = str(args.cache_dir) if args.cache_dir else None
+    file_iter = _iter_gbk_files(input_dir, args.exts)
+
     with args.output.open("w", encoding="utf-8") as outf:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            with tqdm(total=total, desc="Parsing GBKs", unit="file") as pbar:
-                for result in executor.map(
-                    _process_file,
-                    (str(p) for p in files),
-                    [str(args.cache_dir) if args.cache_dir else None] * len(files),
-                    [args.pred_threshold] * len(files),
-                    chunksize=args.chunksize,
-                ):
-                    processed += 1
-                    pbar.update(1)
+            # Start with unknown total, grow as we discover files
+            with tqdm(total=0, desc="Parsing GBKs", unit="file") as pbar:
+                while True:
+                    batch = list(islice(file_iter, args.discover_batch))
+                    if not batch:
+                        break
 
-                    if not result:
-                        continue
+                    # Increase total as new files are discovered
+                    pbar.total += len(batch)
+                    pbar.refresh()
 
-                    if isinstance(result, dict) and "error" in result:
-                        errors += 1
-                    else:
-                        successes += 1
+                    for result in executor.map(
+                        _process_file,
+                        (str(p) for p in batch),
+                        [cache_arg] * len(batch),
+                        [args.pred_threshold] * len(batch),
+                        chunksize=args.chunksize,
+                    ):
+                        processed += 1
+                        pbar.update(1)
 
-                    outf.write(json.dumps(result, ensure_ascii=False) + "\n")
-                    pbar.set_postfix(ok=successes, errors=errors)
+                        if not result:
+                            continue
+
+                        if isinstance(result, dict) and "error" in result:
+                            errors += 1
+                        else:
+                            successes += 1
+
+                        outf.write(json.dumps(result, ensure_ascii=False) + "\n")
+                        pbar.set_postfix(ok=successes, errors=errors)
+
+    # Optional: final summary to stderr
+    print(
+        f"Done. processed={processed}, ok={successes}, errors={errors}",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":
