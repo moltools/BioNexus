@@ -74,8 +74,8 @@
     or create a dump directly from Docker:
 
     ```bash
-    docker exec -it bionexus-db-1 pg_dump -U postgres -Fc -d mydb -f /tmp/mydb.dump
-    docker cp bionexus-db-1:/tmp/db.dump ./db.dump
+    docker exec -it bionexus-db-1 pg_dump -U bionexus -Fc -d bionexus -f /tmp/bionexus.dump
+    docker cp bionexus-db-1:/tmp/bionexus.dump ./bionexus.dump
     ```
 
 Adminer: http://localhost:8080 (server: db, user: bionexus, db: bionexus)
