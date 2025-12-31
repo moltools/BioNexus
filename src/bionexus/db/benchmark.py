@@ -5,8 +5,10 @@ import statistics
 from collections import defaultdict
 import logging
 import json
+import random
+import numpy as np
 
-from sqlalchemy import select
+from sqlalchemy import select, func, and_
 
 from bionexus.db.engine import SessionLocal
 from bionexus.db.models import (
@@ -22,6 +24,18 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
+
+# set font to Helvetica
+plt.rcParams["font.family"] = "Helvetica"
+
+FONT_SIZE_AXIS_TITLE = 18
+FONT_SIZE_AXIS_LABELS = 16
+FONT_SIZE_TITLE = 20
+FONT_SIZE_LEGEND = 16
+PLOT_PALETTE = [
+    "#e69f00",
+    "#56b4e9",
+]
 
 
 def _bitvalue_to_int(v: object) -> int:
@@ -526,7 +540,7 @@ def plot_three_panels_compare_coverage(
         ("NRPS BGCs", ks_nrps, lines_nrps_any, lines_nrps_cov, counts_nrps_any, counts_nrps_cov),
     ]
 
-    colors = {0.4: "tab:blue", 0.675: "tab:orange"}
+    colors = {0.4: PLOT_PALETTE[0], 0.675: PLOT_PALETTE[1]}
     linestyles = {"any": "-", "cov": "--"}
     yticks = [i / 10 for i in range(0, 11)]
 
@@ -561,15 +575,16 @@ def plot_three_panels_compare_coverage(
                     label=f"Tc ≥ {T}, cov ≥ 0.9 (N={n_cov})",
                 )
 
-        ax.set_title(title, fontsize=15)
-        ax.set_xlabel("Top-K", fontsize=13)
+        ax.set_title(title, fontsize=FONT_SIZE_TITLE)
+        ax.set_xlabel("Top-K", fontsize=FONT_SIZE_AXIS_TITLE)
         ax.set_xticks(ks)
         ax.set_ylim(0.0, 1.0)
-        ax.set_yticks(yticks)
+        ax.set_yticks(yticks, [f"{ytick:.1f}" for ytick in yticks], fontsize=FONT_SIZE_AXIS_LABELS)
+        ax.set_xticklabels([str(k) for k in ks], fontsize=FONT_SIZE_AXIS_LABELS)
         ax.grid(True, axis="y", alpha=0.3)
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=FONT_SIZE_LEGEND)
 
-    axes[0].set_ylabel("Hit Rate", fontsize=13)
+    axes[0].set_ylabel("Hit rate", fontsize=FONT_SIZE_AXIS_TITLE)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=300)
@@ -649,8 +664,369 @@ def plot_three_panels_timing(
     print(f"Saved timing figure → {out_path}")
 
 
+def sample_true_vs_random_similarities(
+    *,
+    metric: str,
+    ann_scheme: str | None = None,
+    ann_key: str | None = None,
+    ann_values: list[str] | None = None,
+    min_coverage: float | None = None,
+    limit_bgc: int | None = None,
+    max_pairs: int = 20000,
+    random_per_true: int = 1,
+    seed: int = 0,
+) -> dict:
+    """
+    Sample similarity distributions for:
+      - true pairs: (BGC, compound in its MIBiG mapping)
+      - random pairs: (same BGC, random compound not in its truth set)
+
+    Currently implemented for metric == "tanimoto" only.
+    Returns dict with lists: true_sims, random_sims, plus some counts.
+    """
+    metric = metric.lower()
+    assert metric in {"tanimoto", "cosine"}
+    if metric != "tanimoto":
+        raise NotImplementedError("This sampler currently supports metric='tanimoto' only.")
+
+    rng = random.Random(seed)
+
+    with SessionLocal() as s:
+        # --- 1) ext_id -> set(compound_id) for MIBiG compounds ---
+        mibig_comp_rows = s.execute(
+            select(CompoundRecord.ext_id, CompoundRecord.compound_id)
+            .where(CompoundRecord.source == "mibig")
+        ).all()
+
+        ext_to_compound_ids: dict[str, set[int]] = defaultdict(set)
+        for ext_id, compound_id in mibig_comp_rows:
+            ext_to_compound_ids[ext_id].add(compound_id)
+
+        # --- 2) load compound bit fps (optionally filter by coverage) ---
+        comp_rf_rows = s.execute(
+            select(
+                RetroFingerprint.fp_retro_b512_bit,
+                RetroMolCompound.compound_id,
+                RetroMolCompound.coverage,
+            )
+            .join(
+                RetroMolCompound,
+                RetroFingerprint.retromol_compound_id == RetroMolCompound.id,
+            )
+        ).all()
+
+        compound_bit_fps: dict[int, int] = {}
+        for fp_bits, compound_id, coverage in comp_rf_rows:
+            if min_coverage is not None:
+                if coverage is None or coverage < min_coverage:
+                    continue
+            fp_int = _bitvalue_to_int(fp_bits)
+            if fp_int != 0:
+                compound_bit_fps[compound_id] = fp_int
+
+        if not compound_bit_fps:
+            logger.warning("No compound bit RetroFingerprints found; aborting sampling.")
+            return {}
+
+        all_compound_ids = list(compound_bit_fps.keys())
+
+        # --- 3) load BGC bit fps + ext_id ---
+        bgc_rows = s.execute(
+            select(
+                GenBankRegion.id,
+                GenBankRegion.ext_id,
+                RetroFingerprint.fp_retro_b512_bit,
+            )
+            .join(
+                BioCrackerGenBank,
+                BioCrackerGenBank.genbank_region_id == GenBankRegion.id,
+            )
+            .join(
+                RetroFingerprint,
+                RetroFingerprint.biocracker_genbank_id == BioCrackerGenBank.id,
+            )
+            .where(GenBankRegion.source == "mibig")
+            .order_by(GenBankRegion.id)
+        ).all()
+
+        bgc_bit_fps: dict[int, list[int]] = defaultdict(list)
+        bgc_ext_id: dict[int, str] = {}
+
+        for region_id, ext_id, fp_bits in bgc_rows:
+            fp_int = _bitvalue_to_int(fp_bits)
+            if fp_int != 0:
+                bgc_bit_fps[region_id].append(fp_int)
+            bgc_ext_id[region_id] = ext_id
+
+        region_ids = sorted(bgc_ext_id.keys())
+
+        # --- 3b) optional annotation filtering (exact set match, same as evaluation) ---
+        if ann_scheme is not None and ann_key is not None and ann_values:
+            target_value_set = set(ann_values)
+            ann_rows = s.execute(
+                select(Annotation.genbank_region_id, Annotation.value)
+                .where(
+                    Annotation.genbank_region_id.in_(region_ids),
+                    Annotation.scheme == ann_scheme,
+                    Annotation.key == ann_key,
+                )
+            ).all()
+
+            region_to_values: dict[int, set[str]] = defaultdict(set)
+            for region_id, val in ann_rows:
+                region_to_values[region_id].add(val)
+
+            region_ids = [
+                rid for rid in region_ids
+                if region_to_values.get(rid, set()) == target_value_set
+            ]
+
+        if limit_bgc is not None:
+            region_ids = region_ids[:limit_bgc]
+
+        # Precompute ext -> valid true cids (must exist in compound_bit_fps)
+        ext_with_valid_compounds: dict[str, set[int]] = {}
+        for ext, cids in ext_to_compound_ids.items():
+            valid = {cid for cid in cids if cid in compound_bit_fps}
+            if valid:
+                ext_with_valid_compounds[ext] = valid
+
+        true_sims: list[float] = []
+        random_sims: list[float] = []
+
+        def best_sim_to_bgc(bgc_fps: list[int], comp_fp: int) -> float:
+            best = 0.0
+            for bg_fp in bgc_fps:
+                sim = _tanimoto_bits(bg_fp, comp_fp)
+                if sim > best:
+                    best = sim
+            return best
+
+        # --- 4) sample pairs, capped by max_pairs ---
+        for rid in region_ids:
+            bgc_fps = bgc_bit_fps.get(rid, [])
+            if not bgc_fps:
+                continue
+
+            ext = bgc_ext_id.get(rid)
+            if not ext:
+                continue
+
+            true_cids = ext_with_valid_compounds.get(ext, set())
+            if not true_cids:
+                continue
+
+            # True pairs
+            for cid in true_cids:
+                if len(true_sims) >= max_pairs:
+                    break
+                sim = best_sim_to_bgc(bgc_fps, compound_bit_fps[cid])
+                true_sims.append(sim)
+
+                # For each true pair, sample random_per_true negatives from global pool
+                for _ in range(random_per_true):
+                    if len(random_sims) >= max_pairs:
+                        break
+
+                    # try a few times to avoid picking a true cid
+                    for _attempt in range(10):
+                        rcid = rng.choice(all_compound_ids)
+                        if rcid not in true_cids:
+                            break
+                    else:
+                        # fallback: allow true (rare if truth set is large)
+                        rcid = rng.choice(all_compound_ids)
+
+                    rsim = best_sim_to_bgc(bgc_fps, compound_bit_fps[rcid])
+                    random_sims.append(rsim)
+
+            if len(true_sims) >= max_pairs and len(random_sims) >= max_pairs:
+                break
+
+        return {
+            "metric": metric,
+            "filter": {"scheme": ann_scheme, "key": ann_key, "values": ann_values},
+            "min_coverage": min_coverage,
+            "n_bgcs_considered": len(region_ids),
+            "n_true_pairs": len(true_sims),
+            "n_random_pairs": len(random_sims),
+            "true_sims": true_sims,
+            "random_sims": random_sims,
+            "seed": seed,
+            "max_pairs": max_pairs,
+            "random_per_true": random_per_true,
+        }
+
+
+def _summarize_dist(x: list[float]) -> dict:
+    if not x:
+        return {"n": 0}
+    arr = np.array(x, dtype=float)
+    return {
+        "n": int(arr.size),
+        "mean": float(arr.mean()),
+        "p50": float(np.percentile(arr, 50)),
+        "p90": float(np.percentile(arr, 90)),
+        "p95": float(np.percentile(arr, 95)),
+        "p99": float(np.percentile(arr, 99)),
+        "max": float(arr.max()),
+    }
+
+
+def plot_true_vs_random_similarity_panels(
+    *,
+    metric: str,
+    out_path: str,
+    all_data: dict,
+    t1_data: dict,
+    nrps_data: dict,
+    bins: int = 50,
+):
+    """
+    3 panels: All / T1PKS / NRPS.
+    Each panel overlays histograms of true vs random similarity.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+
+    panels = [
+        ("All BGCs", all_data),
+        ("T1PKS BGCs", t1_data),
+        ("NRPS BGCs", nrps_data),
+    ]
+
+    for ax, (title, dat) in zip(axes, panels):
+        true_sims = dat.get("true_sims", [])
+        rand_sims = dat.get("random_sims", [])
+        if not true_sims or not rand_sims:
+            ax.set_title(f"{title}\n(no data)")
+            continue
+
+        # consistent binning across [0,1]
+        edges = np.linspace(0.0, 1.0, bins + 1)
+
+        ax.hist(rand_sims, bins=edges, density=True, alpha=0.5, label=f"random (n={len(rand_sims)})", color=PLOT_PALETTE[0])
+        ax.hist(true_sims, bins=edges, density=True, alpha=0.5, label=f"true (n={len(true_sims)})", color=PLOT_PALETTE[1])
+
+        t_med = np.median(true_sims)
+        r_med = np.median(rand_sims)
+        ax.axvline(r_med, linewidth=2, linestyle="--", label=f"median random={r_med:.3f}", color="black")
+        ax.axvline(t_med, linewidth=2, linestyle="-", label=f"median true={t_med:.3f}", color="black")
+
+        ax.set_title(title, fontsize=FONT_SIZE_TITLE)
+        ax.set_xlabel("Similarity", fontsize=FONT_SIZE_AXIS_TITLE)
+        ax.set_xlim(0.0, 1.0)
+        ax.set_yticklabels([f"{ytick:.2f}" for ytick in ax.get_yticks()], fontsize=FONT_SIZE_AXIS_LABELS)
+        ax.set_xticklabels([f"{xtick:.1f}" for xtick in ax.get_xticks()], fontsize=FONT_SIZE_AXIS_LABELS)
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.legend(fontsize=FONT_SIZE_LEGEND)
+
+    axes[0].set_ylabel("Density", fontsize=FONT_SIZE_AXIS_TITLE)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(out_path, dpi=300)
+    print(f"Saved similarity distribution figure → {out_path}")
+
+
+def plot_compound_coverage_distribution(
+    *,
+    out_path: str,
+    bin_width: float = 0.01,  # bars from 0.00..1.00 in steps of 0.01
+) -> dict:
+    """
+    For each compound_id, take the *best* (max) RetroMolCompound.coverage across rows.
+    Plot a bar histogram over coverage in [0, 1] and report counts >= 0.9 and >= 0.5.
+
+    Returns:
+        {
+          "n_compounds_with_coverage": int,
+          "count_ge_0_9": int,
+          "count_ge_0_5": int,
+          "fraction_ge_0_9": float,
+          "fraction_ge_0_5": float,
+        }
+    """
+    assert 0 < bin_width <= 0.1, "bin_width should be reasonable (e.g., 0.01 or 0.02)"
+
+    with SessionLocal() as s:
+        # Best coverage per compound_id (max over rows)
+        rows = s.execute(
+            select(
+                RetroMolCompound.compound_id,
+                func.max(RetroMolCompound.coverage).label("best_cov"),
+            )
+            .where(RetroMolCompound.coverage.isnot(None))
+            .group_by(RetroMolCompound.compound_id)
+        ).all()
+
+    best_covs = [float(cov) for _cid, cov in rows if cov is not None]
+
+    if not best_covs:
+        logger.warning("No compound coverage values found; nothing to plot.")
+        return {
+            "n_compounds_with_coverage": 0,
+            "count_ge_0_9": 0,
+            "count_ge_0_5": 0,
+            "fraction_ge_0_9": 0.0,
+            "fraction_ge_0_5": 0.0,
+        }
+
+    # Clamp into [0, 1] just in case
+    best_covs = [min(1.0, max(0.0, x)) for x in best_covs]
+
+    n = len(best_covs)
+    count_ge_0_9 = sum(1 for x in best_covs if x >= 0.9)
+    count_ge_0_5 = sum(1 for x in best_covs if x >= 0.5)
+
+    # Histogram bins from 0..1
+    bins = int(round(1.0 / bin_width))
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    hist, _ = np.histogram(best_covs, bins=edges)
+
+    # Plot as bars
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    width = (edges[1] - edges[0])
+
+    plt.figure(figsize=(5, 4))
+    plt.bar(centers, hist, width=width, align="center", color=PLOT_PALETTE[1], edgecolor="black", linewidth=1)
+    plt.xlim(0.0, 1.0)
+    plt.xlabel("coverage", fontsize=FONT_SIZE_AXIS_TITLE)
+    plt.ylabel("count", fontsize=FONT_SIZE_AXIS_TITLE)
+    plt.grid(True, axis="y", alpha=0.3)
+
+    # annotate the two threshold counts
+    plt.text(
+        0.02, 0.98,
+        f"N compounds={n}\n"
+        f"coverage ≥ 0.9: {count_ge_0_9} ({count_ge_0_9/n:.1%})\n"
+        f"coverage ≥ 0.5: {count_ge_0_5} ({count_ge_0_5/n:.1%})",
+        transform=plt.gca().transAxes,
+        va="top",
+        fontsize=12,
+    )
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=300)
+    print(f"Saved coverage distribution → {out_path}")
+
+    # Also print counts plainly (as you asked)
+    print(f"Compounds with best coverage ≥ 0.9: {count_ge_0_9} / {n} ({count_ge_0_9/n:.2%})")
+    print(f"Compounds with best coverage ≥ 0.5: {count_ge_0_5} / {n} ({count_ge_0_5/n:.2%})")
+
+    return {
+        "n_compounds_with_coverage": n,
+        "count_ge_0_9": count_ge_0_9,
+        "count_ge_0_5": count_ge_0_5,
+        "fraction_ge_0_9": count_ge_0_9 / n,
+        "fraction_ge_0_5": count_ge_0_5 / n,
+    }
+
+
 def benchmark(out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
+
+    plot_compound_coverage_distribution(
+        out_path=os.path.join(out_dir, "compound_coverage_distribution_best_per_compound.svg"),
+        bin_width=0.05,
+    )
 
     metrics = ["tanimoto", "cosine"]
     top_ks = [1, 5, 10, 50, 100]
@@ -711,7 +1087,7 @@ def benchmark(out_dir: str):
             t1_cov_path=os.path.join(out_dir, f"benchmark_{metric}_T1PKS_cov_cov_0.9.json"),
             nrps_any_path=os.path.join(out_dir, f"benchmark_{metric}_NRPS_cov_any.json"),
             nrps_cov_path=os.path.join(out_dir, f"benchmark_{metric}_NRPS_cov_cov_0.9.json"),
-            out_path=os.path.join(out_dir, f"benchmark_hit_rates_cov_compare_{metric}.png"),
+            out_path=os.path.join(out_dir, f"benchmark_hit_rates_cov_compare_{metric}.svg"),
         )
 
         # Plot timing comparison for this metric
@@ -723,5 +1099,61 @@ def benchmark(out_dir: str):
             t1_cov_path=os.path.join(out_dir, f"benchmark_{metric}_T1PKS_cov_cov_0.9.json"),
             nrps_any_path=os.path.join(out_dir, f"benchmark_{metric}_NRPS_cov_any.json"),
             nrps_cov_path=os.path.join(out_dir, f"benchmark_{metric}_NRPS_cov_cov_0.9.json"),
-            out_path=os.path.join(out_dir, f"benchmark_timing_cov_compare_{metric}.png"),
+            out_path=os.path.join(out_dir, f"benchmark_timing_cov_compare_{metric}.svg"),
         )
+
+        if metric != "tanimoto":
+            # similarity distribution sampling only implemented for tanimoto
+            continue
+
+        for min_cov, cov_label in coverage_settings:
+            # All
+            all_dat = sample_true_vs_random_similarities(
+                metric=metric,
+                min_coverage=min_cov,
+                ann_scheme=None,
+                ann_key=None,
+                ann_values=None,
+                max_pairs=20000,
+                random_per_true=1,
+                seed=0,
+            )
+            # T1PKS
+            t1_dat = sample_true_vs_random_similarities(
+                metric=metric,
+                min_coverage=min_cov,
+                ann_scheme="biosynthesis",
+                ann_key="product",
+                ann_values=["T1PKS"],
+                max_pairs=20000,
+                random_per_true=1,
+                seed=0,
+            )
+            # NRPS
+            nrps_dat = sample_true_vs_random_similarities(
+                metric=metric,
+                min_coverage=min_cov,
+                ann_scheme="biosynthesis",
+                ann_key="product",
+                ann_values=["NRPS"],
+                max_pairs=20000,
+                random_per_true=1,
+                seed=0,
+            )
+
+            # optional: print quick summaries
+            logger.info("Similarity dist summary (%s, cov=%s) ALL true=%s random=%s",
+                        metric, cov_label, _summarize_dist(all_dat.get("true_sims", [])), _summarize_dist(all_dat.get("random_sims", [])))
+            logger.info("Similarity dist summary (%s, cov=%s) T1PKS true=%s random=%s",
+                        metric, cov_label, _summarize_dist(t1_dat.get("true_sims", [])), _summarize_dist(t1_dat.get("random_sims", [])))
+            logger.info("Similarity dist summary (%s, cov=%s) NRPS true=%s random=%s",
+                        metric, cov_label, _summarize_dist(nrps_dat.get("true_sims", [])), _summarize_dist(nrps_dat.get("random_sims", [])))
+
+            plot_true_vs_random_similarity_panels(
+                metric=metric,
+                out_path=os.path.join(out_dir, f"benchmark_true_vs_random_similarity_{metric}_cov_{cov_label}.svg"),
+                all_data=all_dat,
+                t1_data=t1_dat,
+                nrps_data=nrps_dat,
+                bins=60,
+            )
