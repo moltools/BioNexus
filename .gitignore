@@ -8,8 +8,3 @@ __pycache__/
 *.sql
 .env
 .vscode/
-.ruff_cache/
-
-# do not push /retromol_cache wherever it is
-# this is the default cache directory for retromol results if no directory is specified
-**/retromol_cache/

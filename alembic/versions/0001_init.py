@@ -1,8 +1,10 @@
-import sqlalchemy as sa
-from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import ARRAY, BIT
+"""Verssion 0001 of BioNexus; initial schema."""
 
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from pgvector.sqlalchemy import Vector
 from alembic import op
+
 
 revision = "0001_init"
 down_revision = None
@@ -11,137 +13,109 @@ depends_on = None
 
 
 def upgrade():
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")  # pgvector for fp_morgan_b2048_r2_vec
+    # pgvector extension (required for Vector columns + ANN indexes)
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+
+    op.create_table(
+        "annotation",
+        sa.Column("id", sa.BigInteger, primary_key=True, nullable=False),
+        sa.Column("scheme", sa.String(64), nullable=False),
+        sa.Column("key", sa.String(64), nullable=False),
+        sa.Column("value", sa.String(256), nullable=False),
+    )
 
     op.create_table(
         "compound",
-        sa.Column("id", sa.BigInteger, primary_key=True),
-        sa.Column("inchikey", sa.String(27), nullable=True),
-        sa.Column("inchi", sa.Text, nullable=True),
-        sa.Column("smiles", sa.Text, nullable=True),
-        sa.Column("mol_formula", sa.String(64), nullable=True),
-        sa.Column("mol_weight", sa.Float, nullable=True),
-        sa.Column("exact_mass", sa.Float, nullable=True),
-        sa.Column("m_plus_h", sa.Float, nullable=True),
-        sa.Column("m_plus_na", sa.Float, nullable=True),
-        sa.Column("c_count", sa.Integer, nullable=True),
-        sa.Column("h_count", sa.Integer, nullable=True),
-        sa.Column("n_count", sa.Integer, nullable=True),
-        sa.Column("o_count", sa.Integer, nullable=True),
-        sa.Column("s_count", sa.Integer, nullable=True),
-        sa.Column("p_count", sa.Integer, nullable=True),
-        sa.Column("f_count", sa.Integer, nullable=True),
-        sa.Column("cl_count", sa.Integer, nullable=True),
-        sa.Column("br_count", sa.Integer, nullable=True),
-        sa.Column("i_count", sa.Integer, nullable=True),
-        sa.Column("fp_morgan_b2048_r2_bit", BIT(2048), nullable=True),
-        sa.Column("fp_morgan_b2048_r2_pop", sa.SmallInteger, nullable=True),
-        sa.Column("fp_morgan_b2048_r2_vec", Vector(2048), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
-            nullable=False,
-        ),
+        sa.Column("id", sa.BigInteger(), primary_key=True, nullable=False),
+        sa.Column("inchikey", sa.String(length=27), nullable=False),
+        sa.Column("inchi", sa.Text(), nullable=False),
+        sa.Column("smiles", sa.Text(), nullable=False),
+        sa.Column("names", ARRAY(sa.String(length=256)), nullable=True),
+        sa.Column("database_xrefs", JSONB(), nullable=True),
+        sa.Column("mol_weight", sa.Float(), nullable=False),
+        sa.Column("c_atom_count", sa.Integer(), nullable=False),
+        sa.Column("h_atom_count", sa.Integer(), nullable=False),
+        sa.Column("n_atom_count", sa.Integer(), nullable=False),
+        sa.Column("o_atom_count", sa.Integer(), nullable=False),
+        sa.Column("p_atom_count", sa.Integer(), nullable=False),
+        sa.Column("s_atom_count", sa.Integer(), nullable=False),
+        sa.Column("f_atom_count", sa.Integer(), nullable=False),
+        sa.Column("cl_atom_count", sa.Integer(), nullable=False),
+        sa.Column("br_atom_count", sa.Integer(), nullable=False),
+        sa.Column("i_atom_count", sa.Integer(), nullable=False),
+        sa.Column("morgan_fp", Vector(2048), nullable=False),
+        sa.Column("retromol_fp", Vector(512), nullable=False),
+        sa.Column("retromol", JSONB(), nullable=False),
     )
 
-    op.create_unique_constraint("uq_compound_inchikey", "compound", ["inchikey"])
+    op.create_index("ix_compound_inchikey", "compound", ["inchikey"], unique=False)
 
     op.create_table(
-        "compound_record",
-        sa.Column("id", sa.BigInteger, primary_key=True),
+        "candidate_cluster",
+        sa.Column("id", sa.BigInteger(), primary_key=True, nullable=False),
+        sa.Column("name", sa.String(length=256), nullable=False),
+        sa.Column("retromol_fp", Vector(512), nullable=False),
+        sa.Column("biocracker", JSONB(), nullable=False),
+    )
+
+    op.create_table(
+        "compound_annotation",
         sa.Column(
             "compound_id",
-            sa.BigInteger,
+            sa.BigInteger(),
             sa.ForeignKey("compound.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("source", sa.String(32), nullable=False),
-        sa.Column("ext_id", sa.String(128), nullable=False),
-        sa.Column("name", sa.String(512), nullable=True),
-        sa.Column("synonyms", ARRAY(sa.String), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
+            primary_key=True,
             nullable=False,
         ),
         sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
+            "annotation_id",
+            sa.BigInteger(),
+            sa.ForeignKey("annotation.id", ondelete="CASCADE"),
+            primary_key=True,
             nullable=False,
         ),
     )
 
-    # allow same (source, ext_id) to link to multiple compounds
-    op.create_unique_constraint(
-        "uq_compound_record_compound_source_ext",
-        "compound_record",
-        ["compound_id", "source", "ext_id"],
+    op.create_table(
+        "candidate_cluster_annotation",
+        sa.Column(
+            "candidate_cluster_id",
+            sa.BigInteger(),
+            sa.ForeignKey("candidate_cluster.id", ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        ),
+        sa.Column(
+            "annotation_id",
+            sa.BigInteger(),
+            sa.ForeignKey("annotation.id", ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        ),
     )
-    op.create_index("ix_compound_record_compound_id", "compound_record", ["compound_id"])
-    # speed lookups by accession
-    op.create_index(
-        "ix_compound_record_source_ext",
-        "compound_record",
-        ["source", "ext_id"],
-        unique=False,
-    )
 
-    # compound
+    # pgvector ANN indexes (cosine)
     op.execute("""
-    CREATE OR REPLACE FUNCTION public.set_timestamp_compound()
-    RETURNS TRIGGER AS $$
-    BEGIN
-      NEW.updated_at = NOW();
-      RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql;
+        CREATE INDEX IF NOT EXISTS ix_compound_retromol_fp_hnsw
+        ON compound USING hnsw (retromol_fp vector_cosine_ops);
     """)
     op.execute("""
-    CREATE TRIGGER compound_set_timestamp
-    BEFORE UPDATE ON public.compound
-    FOR EACH ROW
-    EXECUTE FUNCTION public.set_timestamp_compound();
+        CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_hnsw
+        ON candidate_cluster USING hnsw (retromol_fp vector_cosine_ops);
     """)
-
-    # compound_record
-    op.execute("""
-    CREATE OR REPLACE FUNCTION public.set_timestamp_compound_record()
-    RETURNS TRIGGER AS $$
-    BEGIN
-      NEW.updated_at = NOW();
-      RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql;
-    """)
-    op.execute("""
-    CREATE TRIGGER compound_record_set_timestamp
-    BEFORE UPDATE ON public.compound_record
-    FOR EACH ROW
-    EXECUTE FUNCTION public.set_timestamp_compound_record();
-    """)
-
 
 def downgrade():
-    # drop in reverse order
-    # drop triggers/functions first (otherwise DROP TABLE will drop dependent objs, but be explicit)
-    op.execute("DROP TRIGGER IF EXISTS compound_record_set_timestamp ON public.compound_record;")
-    op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_compound_record;")
-    op.execute("DROP TRIGGER IF EXISTS compound_set_timestamp ON public.compound;")
-    op.execute("DROP FUNCTION IF EXISTS public.set_timestamp_compound;")
+    # Drop ANN indexes
+    op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_hnsw;")
+    op.execute("DROP INDEX IF EXISTS ix_compound_retromol_fp_hnsw;")
 
-    op.drop_index("ix_compound_record_source_ext", table_name="compound_record")
-    op.drop_index("ix_compound_record_compound_id", table_name="compound_record")
-    op.drop_constraint("uq_compound_record_compound_source_ext", "compound_record", type_="unique")
-    op.drop_table("compound_record")
+    # Drop tables (association tables first due to FKs)
+    op.drop_table("candidate_cluster_annotation")
+    op.drop_table("compound_annotation")
 
-    op.drop_constraint("uq_compound_inchikey", "compound", type_="unique")
+    op.drop_table("candidate_cluster")
+
+    op.drop_index("ix_compound_inchikey", table_name="compound")
     op.drop_table("compound")
+
+    op.drop_table("annotation")

@@ -1,14 +1,12 @@
 """Alembic migration environment configuration file."""
 
-from __future__ import annotations
-
 import os
 from logging.config import fileConfig
 from pathlib import Path
 
 from sqlalchemy import engine_from_config, pool
-
 from alembic import context
+
 from bionexus.db import models as bnx_models
 
 # Make sure we import local repo version, not installed package
@@ -19,7 +17,6 @@ if str(REPO_ROOT) not in os.sys.path:
 # Load .env from repo root
 try:
     from dotenv import load_dotenv
-
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 except Exception:
     pass
@@ -56,7 +53,6 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         compare_type=True,
         compare_server_default=True,
-        # include_schemas=True,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -78,6 +74,7 @@ def run_migrations_online() -> None:
             context.run_migrations()
 
 
+# Determine mode and run migrations accordingly
 if context.is_offline_mode():
     run_migrations_offline()
 else:

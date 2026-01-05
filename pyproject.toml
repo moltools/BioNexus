@@ -1,6 +1,6 @@
 [project]
 name = "bionexus"
-version = "1.0.0"
+version = "2.0.0"
 description = "BioNexus facilitates cross-modal retrieval between natural products and biosynthetic gene clusters"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -54,7 +54,7 @@ build-backend = "hatchling.build"
 
 [project.optional-dependencies]
 dev = [
-    "ruff"
+    "pytest"
 ]
 
 [tool.hatch.metadata]
@@ -74,22 +74,3 @@ bionexus = "bionexus.cli:main"
 [tool.hatch.envs.dev]
 features = ["dev"]
 python = "3.10"
-
-[tool.hatch.envs.dev.scripts]
-lint = "ruff check ."
-fmt = "ruff format ."
-
-# -------------------------
-# Ruff
-# -------------------------
-[tool.ruff]
-line-length = 120
-target-version = "py310"
-extend-exclude = ["build", "dist", ".venv", "venv", "typings"]
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
-ignore = []
-
-[tool.ruff.lint.per-file-ignores]
-"tests/data/**/*" = ["E501"]

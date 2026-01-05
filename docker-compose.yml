@@ -18,16 +18,3 @@ services:
     image: adminer
     restart: always
     ports: ["8080:8080"]
-
-  app:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.app
-    env_file: .env
-    depends_on: [db]
-    volumes:
-      - ./:/workspace
-      - ./data:/data
-    working_dir: /workspace
-    entrypoint: ["bash", "-lc"]
-    command: "python -m bionexus.cli --help"
