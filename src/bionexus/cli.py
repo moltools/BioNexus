@@ -10,7 +10,8 @@ from alembic import command
 from alembic.config import Config
 
 from bionexus.version import __version__
-from bionexus.utils.logging import setup_logging, add_file_handler
+from bionexus.utils.logging import setup_logging
+from bionexus.etl.compound import load_compounds
 
 
 log = logging.getLogger(__name__)
@@ -77,7 +78,8 @@ def cmd_load_compounds(args: argparse.Namespace) -> None:
     """
     Load compounds into database from a specifified file.
     """
-    raise NotImplementedError("compound loading not yet implemented")
+    jsonl_path = Path(args.jsonl).expanduser()
+    load_compounds(jsonl=jsonl_path)
 
 
 def cmd_load_candidate_clusters(args: argparse.Namespace) -> None:
@@ -122,18 +124,22 @@ def cli() -> argparse.ArgumentParser:
     dump_parser.add_argument("--out", help="output file path for the database dump")
     dump_parser.set_defaults(func=cmd_dump)
 
+    # Load data
+    load_parser = subparsers.add_parser("load", help="load data into the database")
+    load_sub = load_parser.add_subparsers(title="data type", required=True)
+
     # Load compounds command
-    load_compounds_parser = subparsers.add_parser("load-compounds", help="load compounds into the database")
+    load_compounds_parser = load_sub.add_parser("compounds", help="load compounds into the database")
     load_compounds_parser.add_argument("--jsonl", help="file containing compounds to load")
     load_compounds_parser.set_defaults(func=cmd_load_compounds)
 
     # Load candidate clusters command
-    load_candidate_clusters_parser = subparsers.add_parser("load-candidate-clusters", help="load candidate clusters into the database")
+    load_candidate_clusters_parser = load_sub.add_parser("clusters", help="load candidate clusters into the database")
     load_candidate_clusters_parser.add_argument("--jsonl", help="file containing candidate clusters to load")
     load_candidate_clusters_parser.set_defaults(func=cmd_load_candidate_clusters)
 
     # Load annotations command
-    load_annotations_parser = subparsers.add_parser("load-annotations", help="load annotations into the database")
+    load_annotations_parser = load_sub.add_parser("annotations", help="load annotations into the database")
     load_annotations_parser.add_argument("--file", help="file containing annotations to load")
     load_annotations_parser.set_defaults(func=cmd_load_annotations)
 
