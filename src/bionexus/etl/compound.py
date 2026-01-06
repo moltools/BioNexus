@@ -9,4 +9,7 @@ def load_compounds(jsonl: Path | str) -> None:
 
     :param jsonl: path to the JSONL file containing compound data
     """
+    if isinstance(jsonl, str):
+        jsonl = Path(jsonl)
+
     raise NotImplementedError("compound loading not yet implemented")

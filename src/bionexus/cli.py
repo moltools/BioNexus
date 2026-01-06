@@ -11,7 +11,9 @@ from alembic.config import Config
 
 from bionexus.version import __version__
 from bionexus.utils.logging import setup_logging
+from bionexus.etl.annotation import load_annotations
 from bionexus.etl.compound import load_compounds
+from bionexus.etl.cluster import load_clusters
 
 
 log = logging.getLogger(__name__)
@@ -73,6 +75,13 @@ def cmd_dump(args: argparse.Namespace) -> None:
         check=True,
     )
 
+def cmd_load_annotations(args: argparse.Namespace) -> None:
+    """
+    Load annotations into database from a specified file.
+    """
+    jsonl_path = Path(args.jsonl).expanduser()
+    load_annotations(jsonl=jsonl_path)
+
 
 def cmd_load_compounds(args: argparse.Namespace) -> None:
     """
@@ -82,18 +91,12 @@ def cmd_load_compounds(args: argparse.Namespace) -> None:
     load_compounds(jsonl=jsonl_path)
 
 
-def cmd_load_candidate_clusters(args: argparse.Namespace) -> None:
+def cmd_load_clusters(args: argparse.Namespace) -> None:
     """
     Load candidate clusters into database from a specified file.
     """
-    raise NotImplementedError("candidate cluster loading not yet implemented")
-
-
-def cmd_load_annotations(args: argparse.Namespace) -> None:
-    """
-    Load annotations into database from a specified file.
-    """
-    raise NotImplementedError("annotation loading not yet implemented")
+    jsonl_path = Path(args.jsonl).expanduser()
+    load_clusters(jsonl=jsonl_path)
 
 
 def cli() -> argparse.ArgumentParser:
@@ -134,9 +137,9 @@ def cli() -> argparse.ArgumentParser:
     load_compounds_parser.set_defaults(func=cmd_load_compounds)
 
     # Load candidate clusters command
-    load_candidate_clusters_parser = load_sub.add_parser("clusters", help="load candidate clusters into the database")
-    load_candidate_clusters_parser.add_argument("--jsonl", help="file containing candidate clusters to load")
-    load_candidate_clusters_parser.set_defaults(func=cmd_load_candidate_clusters)
+    load_clusters_parser = load_sub.add_parser("clusters", help="load candidate clusters into the database")
+    load_clusters_parser.add_argument("--jsonl", help="file containing candidate clusters to load")
+    load_clusters_parser.set_defaults(func=cmd_load_clusters)
 
     # Load annotations command
     load_annotations_parser = load_sub.add_parser("annotations", help="load annotations into the database")
