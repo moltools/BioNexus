@@ -46,6 +46,7 @@ def upgrade():
         sa.Column("morgan_fp", Vector(2048), nullable=False),
         sa.Column("retromol_fp", Vector(512), nullable=False),
         sa.Column("retromol", JSONB(), nullable=False),
+        sa.Column("coverage", sa.Float(), nullable=False),
     )
 
     op.create_index("ix_compound_inchikey", "compound", ["inchikey"], unique=False)

@@ -96,6 +96,7 @@ class Compound(Base):
     
     # RetroMol parsing results (as serialized dict/JSON)
     retromol: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=False)
+    coverage: Mapped[float] = mapped_column(sa.Float, nullable=False)
 
     annotations = relationship(
         "Annotation",
