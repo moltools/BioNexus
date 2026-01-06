@@ -13,3 +13,7 @@ def load_clusters(jsonl: Path | str) -> None:
         jsonl = Path(jsonl)
 
     raise NotImplementedError("candidate cluster loading not yet implemented")
+
+
+# TODO: create function that checks which bits in retromol_fp are occupied by 
+#       clusters to be used as mask for cross-modal retrieval

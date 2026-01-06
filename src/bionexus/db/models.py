@@ -28,6 +28,56 @@ candidate_cluster_annotation = sa.Table(
     sa.Column("annotation_id", sa.BigInteger, sa.ForeignKey("annotation.id", ondelete="CASCADE"), primary_key=True),
 )
 
+compound_reference = sa.Table(
+    "compound_reference",
+    Base.metadata,
+    sa.Column("compound_id", sa.BigInteger, sa.ForeignKey("compound.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("reference_id", sa.BigInteger, sa.ForeignKey("reference.id", ondelete="CASCADE"), primary_key=True),
+)
+
+candidate_cluster_reference = sa.Table(
+    "candidate_cluster_reference",
+    Base.metadata,
+    sa.Column("candidate_cluster_id", sa.BigInteger, sa.ForeignKey("candidate_cluster.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("reference_id", sa.BigInteger, sa.ForeignKey("reference.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Reference(Base):
+    """
+    Describes a literature or database reference linked to either or both a Compound and/or a CandidateCluster.
+    """
+
+    __tablename__ = "reference"
+
+    id: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True)
+
+    name: Mapped[str] = mapped_column(sa.String(256), nullable=False)
+    database_name: Mapped[str] = mapped_column(sa.String(128), nullable=False)
+    database_identifier: Mapped[str] = mapped_column(sa.String(128), nullable=False)
+
+    # Only one reference can exist for a database per identifier (e.g., only one NPA000001 in NPAtlas)
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "database_name",
+            "database_identifier",
+            name="ux_reference_dbname_dbid",
+        ),
+    )
+
+    compounds = relationship(
+        "Compound",
+        secondary=compound_reference,
+        back_populates="references",
+        lazy="selectin",
+    )
+    candidate_clusters = relationship(
+        "CandidateCluster",
+        secondary=candidate_cluster_reference,
+        back_populates="references",
+        lazy="selectin",
+    )
+
 
 class Annotation(Base):
     """
@@ -67,13 +117,8 @@ class Compound(Base):
     id: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True)
 
     # Canonical identifiers/structure
-    inchikey: Mapped[str] = mapped_column(sa.String(27), nullable=False, index=True)
-    inchi: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    inchikey: Mapped[str] = mapped_column(sa.String(27), nullable=False, unique=True, index=True)
     smiles: Mapped[str] = mapped_column(sa.Text, nullable=False)
-
-    # Names and database cross-references; compound can have 0 or more names/refs
-    names: Mapped[list[str] | None] = mapped_column(ARRAY(sa.String(256)), nullable=True)
-    database_xrefs: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
 
     # Canonical properties
     mol_weight: Mapped[float] = mapped_column(sa.Float, nullable=False)
@@ -104,6 +149,12 @@ class Compound(Base):
         back_populates="compounds",
         lazy="selectin",
     )
+    references = relationship(
+        "Reference",
+        secondary=compound_reference,
+        back_populates="compounds",
+        lazy="selectin",
+    )
 
 
 class CandidateCluster(Base):
@@ -115,8 +166,10 @@ class CandidateCluster(Base):
 
     id: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True)
 
-    # Candidate cluster identifier
-    name: Mapped[str] = mapped_column(sa.String(256), nullable=False)
+    # Candidate cluster identifiers
+    file_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    start_bp: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
+    end_bp: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
 
     # Fingerprints
     retromol_fp: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=False)
@@ -127,6 +180,12 @@ class CandidateCluster(Base):
     annotations = relationship(
         "Annotation",
         secondary=candidate_cluster_annotation,
+        back_populates="candidate_clusters",
+        lazy="selectin",
+    )
+    references = relationship(
+        "Reference",
+        secondary=candidate_cluster_reference,
         back_populates="candidate_clusters",
         lazy="selectin",
     )

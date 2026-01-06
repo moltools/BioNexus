@@ -1,10 +1,16 @@
 """Command line interface for interacting with the BioNexus database."""
 
+from dotenv import load_dotenv
+from pathlib import Path
+
+try:
+    load_dotenv(Path(__file__).parent.parent.parent / ".env")
+except Exception:
+    exit("could not load .env file")
+
 import argparse
 import logging
-import os
 import subprocess
-from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
@@ -155,7 +161,7 @@ def main(argv: list[str] | None = None) -> None:
 
     :param argv: command line arguments
     """
-    setup_logging()
+    setup_logging(level="DEBUG")
     parser = cli()
     args = parser.parse_args(argv)
     args.func(args)

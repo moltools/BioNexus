@@ -28,7 +28,13 @@
 
 5) Load data:
     
-    Coming soon...
+    RetroMol and BioCracker results can be loaded with the load command. For more information, run:
+
+    ```bash 
+    bionexus load --help
+    ```
+
+    Examples of scripts that extract annotations and references from RetroMol and BioCracker can be found in the `scripts/` folder.
 
 6) Dump for deployoment:
 
