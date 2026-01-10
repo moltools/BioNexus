@@ -59,9 +59,10 @@ class Reference(Base):
     # Only one reference can exist for a database per identifier (e.g., only one NPA000001 in NPAtlas)
     __table_args__ = (
         sa.UniqueConstraint(
+            "name",
             "database_name",
             "database_identifier",
-            name="ux_reference_dbname_dbid",
+            name="ux_reference_name_dbname_dbid",
         ),
     )
 
@@ -92,6 +93,15 @@ class Annotation(Base):
     scheme: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     key: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     value: Mapped[str] = mapped_column(sa.String(256), nullable=False)
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "scheme",
+            "key",
+            "value",
+            name="ux_annotation_scheme_key_value",
+        ),
+    )
 
     compounds = relationship(
         "Compound",
@@ -137,7 +147,8 @@ class Compound(Base):
 
     # Fingerprints
     morgan_fp: Mapped[list[float] | None] = mapped_column(Vector(2048), nullable=False)
-    retromol_fp: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=False)
+    retromol_fp_binary: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
+    retromol_fp_counted: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
     
     # RetroMol parsing results (as serialized dict/JSON)
     retromol: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=False)
@@ -167,15 +178,29 @@ class CandidateCluster(Base):
     id: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True)
 
     # Candidate cluster identifiers
+    record_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
     file_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
     start_bp: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
     end_bp: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
 
     # Fingerprints
-    retromol_fp: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=False)
+    # retromol_fp_binary_by_orf: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
+    # retromol_fp_counted_by_orf: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
+    # retromol_fp_binary_by_region: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
+    retromol_fp_counted_by_region: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=False)
 
     # BioCracker parsing results (as serialized dict/JSON)
     biocracker: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "record_name",
+            "file_name",
+            "start_bp",
+            "end_bp",
+            name="ux_candidate_cluster_recordname_filename_start_end",
+        ),
+    )
 
     annotations = relationship(
         "Annotation",

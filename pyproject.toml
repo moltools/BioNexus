@@ -28,6 +28,7 @@ dependencies = [
     "aiohttp",
     "retromol",
     "biocracker",
+    "requests"
 ]
 
 classifiers = [

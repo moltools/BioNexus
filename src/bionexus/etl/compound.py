@@ -10,8 +10,8 @@ from rdkit import RDLogger
 from rdkit.Chem.rdchem import Mol
 from rdkit.Chem import rdMolDescriptors
 
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+import sqlalchemy as sa
+from sqlalchemy.exc import SQLAlchemyError
 
 from retromol.io.json import iter_json
 from retromol.model.result import Result
@@ -102,10 +102,7 @@ def calculate_compound_props(mol: Mol) -> CompoundProps:
     )
 
 
-def load_compounds(
-    jsonl: Path | str,
-    chunk_size: int = 100
-) -> None:
+def load_compounds(jsonl: Path | str, chunk_size: int = 1_000) -> None:
     """
     Load compounds from a JSONL file into the database.
 
@@ -118,118 +115,107 @@ def load_compounds(
     if isinstance(jsonl, str):
         jsonl = Path(jsonl)
 
-    # Load default RuleSet (we assume for now that is what the results were parsed with as well)
     ruleset = RuleSet.load_default()
-    matching_rules = ruleset.matching_rules
-    generator = FingerprintGenerator(matching_rules)
+    generator = FingerprintGenerator(ruleset.matching_rules)
 
-    # Get number of lines in the file for progress bar
-    num_lines = sum(1 for _ in open(jsonl, "r", encoding="utf-8"))
-
-    # Insert compounds in chunks
-    batch_compounds: list[Compound] = []
-
-    # De-dedupe within this load (by inchikey)
-    seen_inchikey: set[str] = set()
-
-    # Keep track of inserted/duplicates/failed
     inserted = 0
     duplicates = 0
     failed = 0
 
+    seen_inchikey: set[str] = set()
+    batch_rows: list[dict] = []
+
+    def flush_batch(session, rows: list[dict]) -> int:
+        """
+        Flush a batch of rows to the database.
+
+        :param session: database session
+        :param rows: list of row dictionaries to insert
+        :return: number of rows inserted
+        """
+        if not rows:
+            return 0
+        
+        stmt = (
+            sa.dialects.postgresql.insert(Compound)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=[Compound.inchikey])
+            .returning(Compound.id)
+        )
+        res = session.execute(stmt)
+        session.commit()
+        return len(res.fetchall())  # returns one row per inserted record
+
     with SessionLocal() as s:
-
-        def commit_compound_batch(compounds: list[Compound]) -> None:
-            """
-            Commit a batch of compounds to the database.
-
-            :param compounds: list of Compound instances to commit
-            """
-            nonlocal inserted, duplicates, failed
+        for rec in tqdm(iter_json(jsonl, jsonl=True)):
+            smiles = None
 
             try:
-                s.add_all(compounds)
-                s.flush()
-                inserted += len(compounds)
-                s.commit()
-            except IntegrityError:
-                s.rollback()
-                for c in compounds:
+                r = Result.from_dict(rec)
+                smiles = r.submission.smiles
+                mol = remove_tags(smiles_to_mol(smiles))
+                inchikey = mol_to_inchikey(mol)
+
+                # Batch level de-dupe of compounds
+                if inchikey in seen_inchikey:
+                    duplicates += 1
+                    continue
+                seen_inchikey.add(inchikey)
+
+                props = calculate_compound_props(mol)
+                coverage = r.calculate_coverage()
+                retromol_fp_counted = [float(x) for x in generator.fingerprint_from_result(r, num_bits=1024, counted=True)]
+                retromol_fp_binary = [float(int(x > 0)) for x in retromol_fp_counted]
+
+                batch_rows.append({
+                    "inchikey": inchikey,
+                    "smiles": smiles,
+                    "mol_weight": props.mol_weight,
+                    "c_atom_count": props.c_atom_count,
+                    "h_atom_count": props.h_atom_count,
+                    "n_atom_count": props.n_atom_count,
+                    "o_atom_count": props.o_atom_count,
+                    "p_atom_count": props.p_atom_count,
+                    "s_atom_count": props.s_atom_count,
+                    "f_atom_count": props.f_atom_count,
+                    "cl_atom_count": props.cl_atom_count,
+                    "br_atom_count": props.br_atom_count,
+                    "i_atom_count": props.i_atom_count,
+                    "morgan_fp": props.morgan_fp,
+                    "retromol_fp_counted": retromol_fp_counted,
+                    "retromol_fp_binary": retromol_fp_binary,
+                    "retromol": r.to_dict(),
+                    "coverage": coverage,
+                })
+
+                if len(batch_rows) >= chunk_size:
                     try:
-                        s.add(c)
-                        s.flush()
-                        inserted += 1
-                    except IntegrityError:
+                        n_ins = flush_batch(s, batch_rows)
+                        inserted += n_ins
+                        duplicates += len(batch_rows) - n_ins
+                    except SQLAlchemyError as e:
                         s.rollback()
-                        duplicates += 1
-                    except SQLAlchemyError:
-                        s.rollback()
-                        failed += 1
-            except SQLAlchemyError:
+                        failed += len(batch_rows)
+                        log.error(f"database error during batch insert: {e}")
+                    finally:
+                        batch_rows.clear()
+                        seen_inchikey.clear()
+
+            except Exception as e:
+                log.warning(f"failed to process compound with SMILES {smiles}: {e}")
+                failed += 1
+                continue
+        
+        # Flush any remaining rows
+        if batch_rows:
+            try:
+                n_ins = flush_batch(s, batch_rows)
+                inserted += n_ins
+                duplicates += len(batch_rows) - n_ins
+            except SQLAlchemyError as e:
                 s.rollback()
-                failed += len(compounds)
-                log.exception("failed to commit compound batch")
-
-        # Process each record in the JSONL file
-        for rec in tqdm(iter_json(jsonl, jsonl=True), total=num_lines):
-            r = Result.from_dict(rec)
-
-            # First check with InChIKey if compound already exists in DB
-            # If item exists, only check if we can add additional names and database_xrefs
-            # Otherwise create new compound entry
-            smiles = r.submission.smiles
-            mol = remove_tags(smiles_to_mol(smiles))
-            inchikey = mol_to_inchikey(mol)
-
-            # Batch level de-dupe of compounds
-            if inchikey in seen_inchikey:
-                duplicates += 1
-                continue
-            seen_inchikey.add(inchikey)
-
-            # Check if compound already exists in DB
-            stmt = select(Compound).where(Compound.inchikey == inchikey)
-            existing_compound = s.execute(stmt).scalar_one_or_none()
-            if existing_compound is not None:
-                duplicates += 1
-                continue
-
-            # Calculate compound properties
-            props = calculate_compound_props(mol)
-
-            # Get RetroMol parsing results
-            coverage = r.calculate_coverage()
-            retromol_fp = [float(x) for x in generator.fingerprint_from_result(r, num_bits=512, counted=True)]
-
-            # Create Compound instance
-            compound = Compound(
-                inchikey=inchikey,
-                smiles=smiles,
-                mol_weight=props.mol_weight,
-                c_atom_count=props.c_atom_count,
-                h_atom_count=props.h_atom_count,
-                n_atom_count=props.n_atom_count,
-                o_atom_count=props.o_atom_count,
-                p_atom_count=props.p_atom_count,
-                s_atom_count=props.s_atom_count,
-                f_atom_count=props.f_atom_count,
-                cl_atom_count=props.cl_atom_count,
-                br_atom_count=props.br_atom_count,
-                i_atom_count=props.i_atom_count,
-                morgan_fp=props.morgan_fp,
-                retromol_fp=retromol_fp,
-                retromol=r.to_dict(),
-                coverage=coverage,
-            )
-            batch_compounds.append(compound)
-
-            # Insert in chunks
-            if len(batch_compounds) >= chunk_size:
-                commit_compound_batch(batch_compounds)
-
-        # Insert any remaining compounds
-        if batch_compounds:
-            commit_compound_batch(batch_compounds)
+                failed += len(batch_rows)
+                log.error(f"database error during final batch insert: {e}")
 
     log.info(f"total compounds inserted: {inserted}")
     log.info(f"total duplicate compounds skipped: {duplicates}")
