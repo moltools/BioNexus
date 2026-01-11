@@ -184,10 +184,10 @@ class CandidateCluster(Base):
     end_bp: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
 
     # Fingerprints
-    # retromol_fp_binary_by_orf: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
-    # retromol_fp_counted_by_orf: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
-    # retromol_fp_binary_by_region: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
-    retromol_fp_counted_by_region: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=False)
+    retromol_fp_binary_by_orf: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
+    retromol_fp_counted_by_orf: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
+    retromol_fp_binary_by_region: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
+    retromol_fp_counted_by_region: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=False)
 
     # BioCracker parsing results (as serialized dict/JSON)
     biocracker: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=False)

@@ -27,12 +27,7 @@ from retromol.chem.mol import smiles_to_mol
 from retromol.chem.fingerprint import mol_to_morgan_fingerprint, calculate_tanimoto_similarity
 from retromol.fingerprint.fingerprint import FingerprintGenerator
 
-from biocracker.query.modules import LinearReadout, PKSModule, NRPSModule, PKSExtenderUnit, linear_readout as biocracker_linear_readout
-from biocracker.io.readers import load_regions
-from biocracker.io.options import AntiSmashOptions
-from biocracker.inference.registry import register_domain_model
-from biocracker.inference.model_paras import ParasModel
-from biocracker.pipelines.annotate_region import annotate_region
+from biocracker.query.modules import LinearReadout, PKSModule, NRPSModule, PKSExtenderUnit
 
 from bionexus.utils.logging import setup_logging
 from bionexus.db.engine import SessionLocal
@@ -57,9 +52,6 @@ def cli() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--smiles", type=str, required=False)
-    parser.add_argument("--gbk", type=str, required=False)
-    # PARAS model path needed when gbk is chosen
-    parser.add_argument("--paras-model-path", type=str, required=False)
     return parser.parse_args()
 
 
@@ -144,10 +136,21 @@ def item_compare(a: SequenceItem | str, b: SequenceItem | str) -> float:
         return 0.0  # gap penalty
     
     elif isinstance(a, SequenceItem) and isinstance(b, SequenceItem):
-        pks_mod_names = {"PKS_A", "PKS_B", "PKS_C", "PKS_D", "B1", "B12", "B5"}
-        if a.name in pks_mod_names and b.name in pks_mod_names:
-            # all PKS extender units treated as equal
+        pks_a = {'PKS_A', 'A2'}
+        pks_b = {'PKS_B', 'B2', 'B6'}
+        pks_d = {'PKS_D', 'D6'} 
+        pks_mod_names = {"PKS_A", "PKS_B", "PKS_C", "PKS_D", "B2", "D6", "A2", "B6"}
+        if a.name in pks_a and b.name in pks_a:
             return 1.0
+        elif a.name in pks_b and b.name in pks_b:
+            return 1.0
+        elif a.name in pks_d and b.name in pks_d:
+            return 1.0
+        elif a.name in pks_mod_names or b.name in pks_mod_names:
+            # could be correct, but we have no info
+            return 0.5
+        # elif (a.name in pks_mod_names or b.name in pks_mod_names) and (a.morgan_fp is not None or b.morgan_fp is not None):
+        #     return 0.5
 
         elif a.name == "UNKNOWN" or b.name == "UNKNOWN":
             # could be correct, but we have no info
@@ -155,6 +158,7 @@ def item_compare(a: SequenceItem | str, b: SequenceItem | str) -> float:
 
         elif a.morgan_fp is not None and b.morgan_fp is not None:
             return calculate_tanimoto_similarity(a.morgan_fp, b.morgan_fp)
+        
     
     return -2.0
 
@@ -174,45 +178,23 @@ def main() -> None:
     ruleset = RuleSet.load_default()
     generator = FingerprintGenerator(ruleset.matching_rules)
 
-    if args.smiles:
-        smiles = args.smiles
-        submission = Submission(smiles)
-        result = run_retromol_with_timeout(submission, ruleset)
-        log.info(f"coverage: {result.calculate_coverage() * 100:.2f}%")
-        retromol_fp_counted = generator.fingerprint_from_result(result, num_bits=512, counted=True)
-        retromol_fp_counted = retromol_fp_counted.astype(float).tolist()
-        retromol_fp_binary = [float(int(x > 0)) for x in retromol_fp_counted]
-        
-        linear_readouts = result.linear_readout.paths
-        linear_readout = max(linear_readouts, key=lambda x: len(x))
-        log.info(f"best linear readout has {len(linear_readout)} module(s)")
-        
-        # Parse linear_readout into sequence of SequenceItems
-        seq1: list[SequenceItem] = [SequenceItem.from_molnode(n) for n in linear_readout]
+    smiles = args.smiles
+    submission = Submission(smiles)
+    result = run_retromol_with_timeout(submission, ruleset)
+    log.info(f"coverage: {result.calculate_coverage() * 100:.2f}%")
+    retromol_fp_counted = generator.fingerprint_from_result(result, num_bits=1024, counted=True)
+    retromol_fp_counted = retromol_fp_counted.astype(float).tolist()
+    retromol_fp_binary = [float(int(x > 0)) for x in retromol_fp_counted]
     
-    elif args.gbk:
-        gbk = args.gbk
-        pm = ParasModel(threshold=0.1, keep_top=3, cache_dir=".", model_path=args.paras_model_path)
-        register_domain_model(pm)
-        options = AntiSmashOptions(readout_level="cand_cluster")
-        regions = load_regions(gbk, options)
-        for region in regions:
-            annotate_region(region)
-        log.info(f"loaded {len(regions)} region(s) from {gbk}")
-        readout = biocracker_linear_readout(regions[0])
-        retromol_fp_counted = generator.fingerprint_from_biocracker_readout(readout, num_bits=512, counted=True, by_orf=False)
-        retromol_fp_counted = retromol_fp_counted.astype(float).tolist()
-        sum(retromol_fp_counted)
-        retromol_fp_binary = [float(int(x > 0)) for x in retromol_fp_counted]
-
-        seq1: list[SequenceItem] = []
-        for mod in readout.modules:
-            if isinstance(mod, NRPSModule): seq1.append(SequenceItem.from_nrps_module(mod))
-            elif isinstance(mod, PKSModule): seq1.append(SequenceItem.from_pks_module(mod))
-            else: raise ValueError(f"unknown module type: {type(mod)}")
+    linear_readouts = result.linear_readout.paths
+    linear_readout = max(linear_readouts, key=lambda x: len(x))
+    log.info(f"best linear readout has {len(linear_readout)} module(s)")
+    
+    # Parse linear_readout into sequence of SequenceItems
+    seq1: list[SequenceItem] = [SequenceItem.from_molnode(n) for n in linear_readout]
 
     # Settings
-    keep_top = 10
+    keep_top = 1000
     best_clusters = []
 
     t0 = time.time()
@@ -237,7 +219,7 @@ def main() -> None:
                 # CandidateCluster.file_name.ilike("BGC%"),
             )
             .order_by(dist.asc())
-            .limit(100)
+            .limit(1000)
         )
         rows = s.execute(stmt).all()
         log.info(f"found {len(rows)} candidate clusters from ANN search")
@@ -254,6 +236,7 @@ def main() -> None:
             if isinstance(mod, NRPSModule): seq2.append(SequenceItem.from_nrps_module(mod))
             elif isinstance(mod, PKSModule): seq2.append(SequenceItem.from_pks_module(mod))
             else: raise ValueError(f"unknown module type: {type(mod)}")
+
         
         if len(seq2):
             # Dynamically create scoring matrix
@@ -301,7 +284,10 @@ def main() -> None:
         else:
             scored.append((cluster, -float("inf"))) 
 
-    for i, (score, cluster, cosine_dist) in enumerate(best_clusters, 1):
+    # sort first on alignment score, then on cosine score
+    best_clusters.sort(key=lambda x: (x[0], -x[2]), reverse=True)
+
+    for i, (score, cluster, cosine_dist) in enumerate(best_clusters[:20], 1):
         print(i, cluster.file_name, cluster.start_bp, cluster.end_bp, f"score: {score:.4f}", f"cosine: {1.0 - cosine_dist:.4f}", sep="\t")
 
     te = time.time()

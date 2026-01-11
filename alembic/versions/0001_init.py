@@ -62,10 +62,10 @@ def upgrade():
         sa.Column("file_name", sa.Text(), nullable=False),
         sa.Column("start_bp", sa.BigInteger(), nullable=False),
         sa.Column("end_bp", sa.BigInteger(), nullable=False),
-        # sa.Column("retromol_fp_counted_by_orf", Vector(1024), nullable=False),
-        # sa.Column("retromol_fp_binary_by_orf", Vector(1024), nullable=False),
-        sa.Column("retromol_fp_counted_by_region", Vector(512), nullable=False),
-        # sa.Column("retromol_fp_binary_by_region", Vector(1024), nullable=False),
+        sa.Column("retromol_fp_counted_by_orf", Vector(1024), nullable=False),
+        sa.Column("retromol_fp_binary_by_orf", Vector(1024), nullable=False),
+        sa.Column("retromol_fp_counted_by_region", Vector(1024), nullable=False),
+        sa.Column("retromol_fp_binary_by_region", Vector(1024), nullable=False),
         sa.Column("biocracker", JSONB(), nullable=False),
         sa.UniqueConstraint(
             "record_name",
@@ -171,30 +171,30 @@ def upgrade():
         CREATE INDEX IF NOT EXISTS ix_compound_retromol_fp_binary_hnsw
         ON compound USING hnsw (retromol_fp_binary vector_cosine_ops);
     """)
-    # op.execute("""
-    #     CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_counted_by_orf_hnsw
-    #     ON candidate_cluster USING hnsw (retromol_fp_counted_by_orf vector_cosine_ops);
-    # """)
-    # op.execute("""
-    #     CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_binary_by_orf_hnsw
-    #     ON candidate_cluster USING hnsw (retromol_fp_binary_by_orf vector_cosine_ops);
-    # """)
+    op.execute("""
+        CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_counted_by_orf_hnsw
+        ON candidate_cluster USING hnsw (retromol_fp_counted_by_orf vector_cosine_ops);
+    """)
+    op.execute("""
+        CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_binary_by_orf_hnsw
+        ON candidate_cluster USING hnsw (retromol_fp_binary_by_orf vector_cosine_ops);
+    """)
     op.execute("""
         CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_counted_by_region_hnsw
         ON candidate_cluster USING hnsw (retromol_fp_counted_by_region vector_cosine_ops);
     """)
-    # op.execute("""
-    #     CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_binary_by_region_hnsw
-    #     ON candidate_cluster USING hnsw (retromol_fp_binary_by_region vector_cosine_ops);
-    # """)
+    op.execute("""
+        CREATE INDEX IF NOT EXISTS ix_candidate_cluster_retromol_fp_binary_by_region_hnsw
+        ON candidate_cluster USING hnsw (retromol_fp_binary_by_region vector_cosine_ops);
+    """)
 
 
 def downgrade():
     # Drop ANN indexes
-    # op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_binary_by_region_hnsw;")
+    op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_binary_by_region_hnsw;")
     op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_counted_by_region_hnsw;")
-    # op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_binary_by_orf_hnsw;")
-    # op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_counted_by_orf_hnsw;")
+    op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_binary_by_orf_hnsw;")
+    op.execute("DROP INDEX IF EXISTS ix_candidate_cluster_retromol_fp_counted_by_orf_hnsw;")
     op.execute("DROP INDEX IF EXISTS ix_compound_retromol_fp_binary_hnsw;")
     op.execute("DROP INDEX IF EXISTS ix_compound_retromol_fp_counted_hnsw;")
 

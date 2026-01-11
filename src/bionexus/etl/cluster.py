@@ -21,7 +21,7 @@ from bionexus.db.models import CandidateCluster
 log = logging.getLogger(__name__)
 
 
-def load_clusters(jsonl: Path | str, chunk_size: int = 10_000) -> None:
+def load_clusters(jsonl: Path | str, chunk_size: int = 1_000) -> None:
     """
     Load candidate clusters from a JSONL file into the database.
 
@@ -79,20 +79,20 @@ def load_clusters(jsonl: Path | str, chunk_size: int = 10_000) -> None:
                     continue
                 seen_cluster_ids.add(cluster_id)
 
-                # retromol_fp_counted_by_orf = [float(x) for x in generator.fingerprint_from_biocracker_readout(r, num_bits=1024, counted=True, by_orf=True)]
-                # retromol_fp_binary_by_orf = [float(int(x > 0)) for x in retromol_fp_counted_by_orf]
-                retromol_fp_counted_by_region = [float(x) for x in generator.fingerprint_from_biocracker_readout(r, num_bits=512, counted=True, by_orf=False)]
-                # retromol_fp_binary_by_region = [float(int(x > 0)) for x in retromol_fp_counted_by_region]
+                retromol_fp_counted_by_orf = [float(x) for x in generator.fingerprint_from_biocracker_readout(r, num_bits=1024, counted=True, by_orf=True)]
+                retromol_fp_binary_by_orf = [float(int(x > 0)) for x in retromol_fp_counted_by_orf]
+                retromol_fp_counted_by_region = [float(x) for x in generator.fingerprint_from_biocracker_readout(r, num_bits=1024, counted=True, by_orf=False)]
+                retromol_fp_binary_by_region = [float(int(x > 0)) for x in retromol_fp_counted_by_region]
 
                 batch_rows.append({
                     "record_name": str(r.id),
                     "file_name": str(r.file_name),
                     "start_bp": int(r.start),
                     "end_bp": int(r.end),
-                    # "retromol_fp_counted_by_orf": retromol_fp_counted_by_orf,
-                    # "retromol_fp_binary_by_orf": retromol_fp_binary_by_orf,
+                    "retromol_fp_counted_by_orf": retromol_fp_counted_by_orf,
+                    "retromol_fp_binary_by_orf": retromol_fp_binary_by_orf,
                     "retromol_fp_counted_by_region": retromol_fp_counted_by_region,
-                    # "retromol_fp_binary_by_region": retromol_fp_binary_by_region,
+                    "retromol_fp_binary_by_region": retromol_fp_binary_by_region,
                     "biocracker": r.to_dict(),
                 })
 

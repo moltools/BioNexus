@@ -85,8 +85,8 @@ def cmd_load_annotations(args: argparse.Namespace) -> None:
     """
     Load annotations into database from a specified file.
     """
-    jsonl_path = Path(args.jsonl).expanduser()
-    load_annotations(jsonl=jsonl_path)
+    filepath = Path(args.file).expanduser()
+    load_annotations(filepath=filepath)
 
 
 def cmd_load_compounds(args: argparse.Namespace) -> None:
