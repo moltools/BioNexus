@@ -86,7 +86,7 @@ def cmd_load_annotations(args: argparse.Namespace) -> None:
     Load annotations into database from a specified file.
     """
     filepath = Path(args.file).expanduser()
-    load_annotations(filepath=filepath)
+    load_annotations(filepath=filepath, ignore_stereochemistry_for_compounds=False)
 
 
 def cmd_load_compounds(args: argparse.Namespace) -> None:

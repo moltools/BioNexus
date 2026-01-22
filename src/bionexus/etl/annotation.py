@@ -24,27 +24,40 @@ from bionexus.db.models import (
 log = logging.getLogger(__name__)
 
 
-def resolve_target(
+def resolve_targets(
     s: sa.orm.Session,
-    row: dict[str, str]
-) -> tuple[str, int] | None:
+    row: dict[str, str],
+    *,
+    ignore_stereochemistry_for_compounds: bool = False,
+) -> list[tuple[str, int]]:
     """
     Resolve the target entity from the row data.
 
     :param s: database session
     :param row: dictionary representing a row of data
-    :return: tuple of (entity type, entity ID) or None if not found
+    :param ignore_stereochemistry_for_compounds: whether to ignore stereochemistry when looking up compounds
+    :return: list of tuples of (entity type, entity ID)
     """
     typ = (row.get("type") or "").strip().lower()
 
     if typ == "compound":
         inchikey = (row.get("inchikey") or "").strip()
         if not inchikey:
-            return None
-        cid = s.execute(
-            sa.select(Compound.id).where(Compound.inchikey == inchikey)
-        ).scalar_one_or_none()
-        return ("compound", int(cid)) if cid is not None else None
+            return []
+        
+        if ignore_stereochemistry_for_compounds:
+            # InChIKey: AAAAAAAAAAAAAA-BBBBBBBBBB-C
+            # Connectivity block is the first 14 chars (before first dash)
+            conn = inchikey.split("-", 1)[0].strip()
+            if len(conn) != 14:
+                return []
+            
+            cids = s.execute(sa.select(Compound.id).where(Compound.inchikey.startswith(conn))).scalars().all()
+            return [("compound", int(cid)) for cid in cids]
+
+        # Exact InChiKey match
+        cid = s.execute(sa.select(Compound.id).where(Compound.inchikey == inchikey)).scalar_one_or_none()
+        return [("compound", int(cid))] if cid is not None else []
     
     elif typ == "candidate_cluster":
         try:
@@ -53,7 +66,7 @@ def resolve_target(
             start_bp = int(row["start_bp"].strip())
             end_bp = int(row["end_bp"].strip())
         except (KeyError, ValueError):
-            return None
+            return []
         
         ccid = s.execute(
             sa.select(CandidateCluster.id).where(
@@ -63,9 +76,9 @@ def resolve_target(
                 CandidateCluster.end_bp == end_bp,
             )
         ).scalar_one_or_none()
-        return ("candidate_cluster", int(ccid)) if ccid is not None else None
+        return [("candidate_cluster", int(ccid))] if ccid is not None else []
     
-    return None
+    return []
 
 
 def upsert_annotation_id(
@@ -173,11 +186,18 @@ def flush_links(
     s.commit()
 
 
-def load_annotations(filepath: Path | str, chunk_size: int = 2_000) -> None:
+def load_annotations(
+    filepath: Path | str,
+    chunk_size: int = 2_000,
+    *,
+    ignore_stereochemistry_for_compounds: bool = False,
+) -> None:
     """
     Load annotations from a file into the database.
 
     :param filepath: path to the file containing annotation data
+    :param chunk_size: number of links to accumulate before flushing to the database
+    :param ignore_stereochemistry_for_compounds: whether to ignore stereochemistry when looking up
     """
     if isinstance(filepath, str):
         filepath = Path(filepath)
@@ -192,17 +212,22 @@ def load_annotations(filepath: Path | str, chunk_size: int = 2_000) -> None:
     with SessionLocal() as s:
         try:
             with filepath.open("r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f, delimiter="\t")
+
+                if filepath.suffix.lower() == ".tsv":
+                    reader = csv.DictReader(f, delimiter="\t")
+                elif filepath.suffix.lower() == ".csv":
+                    reader = csv.DictReader(f, delimiter=",")
+                else:
+                    raise ValueError(f"unsupported file extension: {filepath.suffix}")
                 
                 for row in tqdm(reader):
                     try:
-                        tgt = resolve_target(s, row)
-                        if tgt is None:
+                        tgts = resolve_targets(s, row, ignore_stereochemistry_for_compounds=ignore_stereochemistry_for_compounds)
+                        if not tgts:
                             skipped += 1
                             log.warning(f"skipping row, target not found: {row}")
                             continue
 
-                        kind, target_id = tgt
                         table = row["table"].strip().lower()
                         scheme = row["scheme"].strip()
                         key = row["key"].strip()
@@ -210,7 +235,8 @@ def load_annotations(filepath: Path | str, chunk_size: int = 2_000) -> None:
 
                         if table == "annotation":
                             ann_id = upsert_annotation_id(s, scheme, key, value)
-                            ann_links.append((kind, target_id, ann_id))
+                            for kind, target_id in tgts:
+                                ann_links.append((kind, target_id, ann_id))
                         
                         elif table == "reference":
                             ref_id = upsert_reference_id(
@@ -219,7 +245,8 @@ def load_annotations(filepath: Path | str, chunk_size: int = 2_000) -> None:
                                 database=scheme,
                                 database_identifier=key
                             )
-                            ref_links.append((kind, target_id, ref_id))
+                            for kind, target_id in tgts:
+                                ref_links.append((kind, target_id, ref_id))
                         else:
                             skipped += 1
                             log.warning(f"skipping row, unknown table '{table}': {row}")

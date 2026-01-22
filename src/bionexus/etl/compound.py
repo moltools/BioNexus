@@ -106,7 +106,7 @@ def load_compounds(jsonl: Path | str, chunk_size: int = 1_000) -> None:
     """
     Load compounds from a JSONL file into the database.
 
-    :param jsonl: path to the JSONL file containing compound data
+    :param jsonl: path to the JSONL file containing RetroMol results data
     :param database_name: name of the database for cross-references
     :param name_key: property key for the compound name
     :param idx_key: property key for the database cross-reference
@@ -152,9 +152,13 @@ def load_compounds(jsonl: Path | str, chunk_size: int = 1_000) -> None:
 
             try:
                 r = Result.from_dict(rec)
+                submission_props = r.submission.props
+                if "compound_inchikey" in submission_props:
+                    inchikey = submission_props["compound_inchikey"]
+                else:
+                    inchikey = r.submission.inchikey
                 smiles = r.submission.smiles
                 mol = remove_tags(smiles_to_mol(smiles))
-                inchikey = mol_to_inchikey(mol)
 
                 # Batch level de-dupe of compounds
                 if inchikey in seen_inchikey:

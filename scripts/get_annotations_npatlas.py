@@ -18,6 +18,7 @@ from tqdm import tqdm
 from rdkit import RDLogger
 
 from retromol.chem.mol import smiles_to_mol, mol_to_inchikey
+from retromol.model.submission import Submission
 
 from bionexus.utils.logging import setup_logging
 
@@ -493,7 +494,9 @@ def main() -> None:
             continue
 
         try:
-            ik = mol_to_inchikey(smiles_to_mol(smiles))
+            # ik = mol_to_inchikey(smiles_to_mol(smiles))
+            submission = Submission(smiles=smiles, canonicalize_tautomer=False)
+            ik = submission.inchikey
         except Exception:
             log.warning(f"skipping entry with invalid SMILES: {smiles}")
             continue
