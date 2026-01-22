@@ -9,12 +9,14 @@ import csv
 import logging
 import os
 import re
+import sys
 import time
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 import requests
+from tqdm import tqdm
 
 from bionexus.utils.logging import setup_logging
 
@@ -116,6 +118,12 @@ def cli() -> argparse.Namespace:
         "--allow-gca",
         action="store_true",
         help="allow returning GCA accessions when no GCF is available",
+    )
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="show progress bar (default: enabled when stderr is a TTY)",
     )
     return parser.parse_args()
 
@@ -572,6 +580,9 @@ def main() -> None:
         raise SystemExit("No valid extensions specified.")
     if args.batch_size < 1:
         raise SystemExit("batch-size must be >= 1")
+    show_progress = args.progress
+    if show_progress is None:
+        show_progress = sys.stderr.isatty()
 
     cache = LRUCache(args.cache_size)
     client = NcbiClient(
@@ -590,6 +601,7 @@ def main() -> None:
     rows_written = 0
     missing_accessions = 0
     pending: list[str] = []
+    pbar = tqdm(desc="GBK files", unit="file", disable=not show_progress)
 
     with open(args.output, mode, newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -632,6 +644,7 @@ def main() -> None:
 
         for path in iter_gbk_files(args.gbk_dir, extensions):
             files_seen += 1
+            pbar.update(1)
             accession = extract_nuccore_accession(
                 path,
                 max_header_lines=args.max_header_lines,
@@ -640,12 +653,15 @@ def main() -> None:
             if not accession:
                 missing_accessions += 1
                 if files_seen % args.log_every == 0:
-                    log.info(
-                        "Processed %d files (rows=%d, missing=%d)",
-                        files_seen,
-                        rows_written,
-                        missing_accessions,
-                    )
+                    if show_progress:
+                        pbar.set_postfix(rows=rows_written, missing=missing_accessions)
+                    else:
+                        log.info(
+                            "Processed %d files (rows=%d, missing=%d)",
+                            files_seen,
+                            rows_written,
+                            missing_accessions,
+                        )
                 continue
 
             pending.append(accession)
@@ -653,14 +669,21 @@ def main() -> None:
                 flush_pending()
 
             if files_seen % args.log_every == 0:
-                log.info(
-                    "Processed %d files (rows=%d, missing=%d)",
-                    files_seen,
-                    rows_written,
-                    missing_accessions,
-                )
+                if show_progress:
+                    pbar.set_postfix(rows=rows_written, missing=missing_accessions)
+                else:
+                    log.info(
+                        "Processed %d files (rows=%d, missing=%d)",
+                        files_seen,
+                        rows_written,
+                        missing_accessions,
+                    )
 
         flush_pending()
+
+    if show_progress:
+        pbar.set_postfix(rows=rows_written, missing=missing_accessions)
+    pbar.close()
 
     log.info(
         "Done. Files=%d, rows=%d, missing_accessions=%d",
