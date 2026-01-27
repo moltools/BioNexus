@@ -18,8 +18,10 @@ from alembic.config import Config
 from bionexus.version import __version__
 from bionexus.utils.logging import setup_logging
 from bionexus.etl.annotation import load_annotations
-from bionexus.etl.compound import load_compounds
+from bionexus.etl.annotate_compounds import annotate_compounds
 from bionexus.etl.cluster import load_clusters
+from bionexus.etl.compounds_npatlas import load_compounds_npatlas
+from bionexus.etl.compounds_mibig import load_compounds_mibig
 
 
 log = logging.getLogger(__name__)
@@ -81,28 +83,44 @@ def cmd_dump(args: argparse.Namespace) -> None:
         check=True,
     )
 
-def cmd_load_annotations(args: argparse.Namespace) -> None:
-    """
-    Load annotations into database from a specified file.
-    """
-    filepath = Path(args.file).expanduser()
-    load_annotations(filepath=filepath, ignore_stereochemistry_for_compounds=False)
-
-
-def cmd_load_compounds(args: argparse.Namespace) -> None:
-    """
-    Load compounds into database from a specifified file.
-    """
-    jsonl_path = Path(args.jsonl).expanduser()
-    load_compounds(jsonl=jsonl_path)
-
 
 def cmd_load_clusters(args: argparse.Namespace) -> None:
     """
-    Load candidate clusters into database from a specified file.
+    Load candidate clusters into the database.
     """
-    jsonl_path = Path(args.jsonl).expanduser()
-    load_clusters(jsonl=jsonl_path)
+    jsonl = Path(args.jsonl).expanduser()
+    load_clusters(jsonl=jsonl)
+
+
+def cmd_load_annotations(args: argparse.Namespace) -> None:
+    """
+    Load annotations into the database.
+    """
+    ann_file = Path(args.file).expanduser()
+    load_annotations(filepath=ann_file)
+
+
+def cmd_load_compounds_npatlas(args: argparse.Namespace) -> None:
+    """
+    Load NPAtlas compounds into the database.
+    """
+    workdir = Path(args.workdir).expanduser()
+    load_compounds_npatlas(workdir=workdir, workers=args.workers)
+
+
+def cmd_load_compounds_mibig(args: argparse.Namespace) -> None:
+    """
+    Load MIBiG compounds into the database.
+    """
+    workdir = Path(args.workdir).expanduser()
+    load_compounds_mibig(workdir=workdir, workers=args.workers)
+
+
+def cmd_annotate_compounds(args: argparse.Namespace) -> None:
+    """
+    Annotate compounds with NPClassifier and ChEBI annotations.
+    """
+    annotate_compounds()
 
 
 def cli() -> argparse.ArgumentParser:
@@ -137,20 +155,31 @@ def cli() -> argparse.ArgumentParser:
     load_parser = subparsers.add_parser("load", help="load data into the database")
     load_sub = load_parser.add_subparsers(title="data type", required=True)
 
-    # Load compounds command
-    load_compounds_parser = load_sub.add_parser("compounds", help="load compounds into the database")
-    load_compounds_parser.add_argument("--jsonl", help="file containing compounds to load")
-    load_compounds_parser.set_defaults(func=cmd_load_compounds)
-
-    # Load candidate clusters command
-    load_clusters_parser = load_sub.add_parser("clusters", help="load candidate clusters into the database")
-    load_clusters_parser.add_argument("--jsonl", help="file containing candidate clusters to load")
-    load_clusters_parser.set_defaults(func=cmd_load_clusters)
-
     # Load annotations command
-    load_annotations_parser = load_sub.add_parser("annotations", help="load annotations into the database")
-    load_annotations_parser.add_argument("--file", help="file containing annotations to load")
-    load_annotations_parser.set_defaults(func=cmd_load_annotations)
+    load_ann_parser = load_sub.add_parser("annotations", help="load annotations into the database")
+    load_ann_parser.add_argument("--file", required=True, help="path to the annotation file")
+    load_ann_parser.set_defaults(func=cmd_load_annotations)
+
+    # Load parsed antiSMASH GBK clusters
+    load_cluster_parser = load_sub.add_parser("clusters", help="load antiSMASH GBK clusters into the database")
+    load_cluster_parser.add_argument("--jsonl", required=True, help="path to the JSONL file with candidate clusters")
+    load_cluster_parser.set_defaults(func=cmd_load_clusters)
+
+    # Load NPAtlas compounds command
+    load_compounds_npatlas_parser = load_sub.add_parser("compounds_npatlas", help="load NPAtlas compounds into the database")
+    load_compounds_npatlas_parser.add_argument("--workdir", required=True, help="working directory for temporary files")
+    load_compounds_npatlas_parser.add_argument("--workers", type=int, default=1, help="number of parallel workers for processing")
+    load_compounds_npatlas_parser.set_defaults(func=cmd_load_compounds_npatlas)
+
+    # Load MIBiG compounds command
+    load_comounds_mibig_parser = load_sub.add_parser("compounds_mibig", help="load MIBiG compounds into the database")
+    load_comounds_mibig_parser.add_argument("--workdir", required=True, help="working directory for temporary files")
+    load_comounds_mibig_parser.add_argument("--workers", type=int, default=1, help="number of parallel workers for processing")
+    load_comounds_mibig_parser.set_defaults(func=cmd_load_compounds_mibig)
+
+    # Annotate compounds command
+    annotate_compounds_parser = subparsers.add_parser("annotate_compounds", help="annotate compounds with NPClassifier and ChEBI annotations")
+    annotate_compounds_parser.set_defaults(func=cmd_annotate_compounds)
 
     return parser
 

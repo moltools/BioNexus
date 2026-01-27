@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
 
-"""Script for retrieving ChEBI annotations for compounds; consumes a CSV/TSV file containing a SMILES column."""
+"""Command for retrieving NPClassifier and ChEBI annotations for compounds in BioNexus."""
 
 import argparse
 import asyncio
@@ -9,18 +8,19 @@ import json
 import logging
 import random
 import time
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 import aiohttp
 import requests
 from tqdm import tqdm
 from rdkit import RDLogger
 
 from retromol.chem.mol import smiles_to_mol, mol_to_inchikey
-from retromol.model.submission import Submission
 
-from bionexus.utils.logging import setup_logging
+from bionexus.db.engine import SessionLocal
+from bionexus.db.models import Annotation, Compound, compound_annotation
 
 
 # Disable RDKit warnings
@@ -439,184 +439,212 @@ def chebi_rows_for_inchikey(inchikey: str) -> list[tuple[str, str, str]]:
     return rows
 
 
-# -------------------------
-# Main
-# -------------------------
+def _chunks(xs: list[Any], n: int) -> Iterable[list[Any]]:
+    for i in range(0, len(xs), n):
+        yield xs[i : i + n]
 
-@dataclass
-class EntryMini:
+
+def _compounds_with_scheme(
+    s: sa.orm.Session,
+    compound_ids: list[int],
+    scheme: str,
+) -> set[int]:
     """
-    Minimal NPAtlas entry representation.
-
-    :var inchikey: InChIKey of the compound
-    :var smiles: SMILES string of the compound
-    :var npaid: NPAtlas identifier
-    :var name: original name of the compound
-    :var synonyms: list of synonyms
-    :var taxonomy: taxonomy information
-    :var npclassifier: NPClassifier annotation blob
+    Return the set of compound_ids that already have >=1 annotation of given scheme.
+    (Many-to-many via compound_annotation)
     """
+    if not compound_ids:
+        return set()
 
-    inchikey: str
-    smiles: str
-    npaid: str
-    name: str | None
-    synonyms: list[str]
-    taxonomy: dict[str, Any]
-    npclassifier: dict[str, Any] | None
+    q = (
+        sa.select(compound_annotation.c.compound_id)
+        .select_from(compound_annotation.join(Annotation, compound_annotation.c.annotation_id == Annotation.id))
+        .where(
+            compound_annotation.c.compound_id.in_(compound_ids),
+            Annotation.scheme == scheme,
+        )
+        .distinct()
+    )
+    return {int(r[0]) for r in s.execute(q).all()}
 
 
-def main() -> None:
+def _ensure_annotations(
+    s: sa.orm.Session,
+    triples: set[tuple[str, str, str]],
+) -> dict[tuple[str, str, str], int]:
+    """
+    Ensure Annotation rows exist for each (scheme,key,value).
+    Returns mapping (scheme,key,value) -> annotation_id.
+
+    Uses INSERT ... ON CONFLICT DO NOTHING and then selects ids.
+    """
+    if not triples:
+        return {}
+
+    rows = [{"scheme": a, "key": b, "value": c} for (a, b, c) in triples]
+
+    ins = pg_insert(Annotation).values(rows).on_conflict_do_nothing(
+        index_elements=["scheme", "key", "value"]
+    )
+    s.execute(ins)
+    s.flush()
+
+    # fetch ids for all triples
+    # Use tuple_ IN (...) for compact query
+    t = sa.tuple_(Annotation.scheme, Annotation.key, Annotation.value)
+    q = sa.select(Annotation.id, Annotation.scheme, Annotation.key, Annotation.value).where(t.in_(list(triples)))
+    out: dict[tuple[str, str, str], int] = {}
+    for aid, sch, key, val in s.execute(q).all():
+        out[(str(sch), str(key), str(val))] = int(aid)
+    return out
+
+
+def _link_compounds_to_annotations(
+    s: sa.orm.Session,
+    links: set[tuple[int, int]],
+) -> int:
+    """
+    Bulk insert into compound_annotation with ON CONFLICT DO NOTHING.
+    links is set of (compound_id, annotation_id).
+    Returns # attempted link rows.
+    """
+    if not links:
+        return 0
+
+    rows = [{"compound_id": cid, "annotation_id": aid} for (cid, aid) in links]
+    ins = pg_insert(compound_annotation).values(rows).on_conflict_do_nothing(
+        index_elements=["compound_id", "annotation_id"]
+    )
+    s.execute(ins)
+    return len(rows)
+    
+
+
+def annotate_compounds(
+    *,
+    chunk_size: int = CHUNK_SIZE,
+) -> None:
     """
     Main function to retrieve ChEBI annotations.
+
+    :param chunk_size: number of entries to process in each chunk
     """
-    args = cli()
-    setup_logging(level=logging.INFO)
+    schemes_of_interest = ["NPClassifier", "ChEBI"]
 
-    delimiter = "\t" if args.output.endswith(".tsv") else ","
-    database = "NPAtlas"
-    annotation_target = "compound"
+    with SessionLocal() as s:
+        # Count compounds for progress bar
+        total = s.execute(sa.select(sa.func.count(Compound.id))).scalar_one()
+        log.info(f"annotating {total} compounds for {', '.join(schemes_of_interest)} annotations")
 
-    with open(args.npatlas, "r") as infile:
-        raw = json.load(infile)
-
-    # First pass: parse, compoute inchikey, collect enrichment needs
-    entries: list[EntryMini] = []
-    need_np_smiles: set[str] = set()
-    need_chebi_inchikeys: set[str] = set()
-
-    for entry in tqdm(raw, desc="Parsing NPAtlas", unit="entry"):
-        npaid = entry.get("npaid")
-        smiles = entry.get("smiles")
-
-        if not npaid or not smiles:
-            log.warning("skipping entry without NPAID or SMILES")
-            continue
-
-        try:
-            # ik = mol_to_inchikey(smiles_to_mol(smiles))
-            submission = Submission(smiles=smiles, canonicalize_tautomer=False)
-            ik = submission.inchikey
-        except Exception:
-            log.warning(f"skipping entry with invalid SMILES: {smiles}")
-            continue
-
-        npblob = entry.get("npclassifier") or None
-        if not npblob or not npblob.get("class_results") or not npblob.get("superclass_results") or not npblob.get("pathway_results"):
-            need_np_smiles.add(smiles)
-
-        need_chebi_inchikeys.add(ik)
-            
-        synonyms = []
-        for syn in (entry.get("synonyms") or []):
-            nm = syn.get("name") if isinstance(syn, dict) else None
-            if nm:
-                synonyms.append(nm)
-
-        entries.append(EntryMini(
-            inchikey=ik,
-            smiles=smiles,
-            npaid=str(npaid),
-            name=entry.get("original_name"),
-            synonyms=synonyms,
-            taxonomy=entry.get("origin_organism") or {},
-            npclassifier=npblob,
-        ))
-
-    # LIMIT TO 1000 FOR TESTING
-    if TESTING:
-        entries = entries[:100]
-        need_np_smiles = need_np_smiles.intersection({e.smiles for e in entries})
-        need_chebi_inchikeys = need_chebi_inchikeys.intersection({e.inchikey for e in entries})
-
-    log.info(f"parsed {len(entries)} NPAtlas entries")
-    log.info(f"need NPClassifier annotations for {len(need_np_smiles)} unique SMILES")
-    log.info(f"need ChEBI annotations for {len(need_chebi_inchikeys)} unique InChIKeys")
-
-    # Enrich NPClassifier annotations
-    np_enriched: dict[str, dict[str, Any] | None] = {}
-    if ENRICH_NP and need_np_smiles:
-        log.info("fetching NPClassifier annotations...")
-        
-        # Chunk to avoid creating too many tasks at once
-        need_list = list(need_np_smiles)
-
-        with tqdm(total=len(need_list), desc="NPClassifier", unit="smiles") as p_np:
-            for i in range(0, len(need_list), CHUNK_SIZE):
-                chunk = need_list[i : i + CHUNK_SIZE]
-                res = asyncio.run(
-                    np_fetch_many(
-                        chunk,
-                        concurrency=NP_CONCURRENCY,
-                        rate_per_sec=NP_RATE,
-                        timeout_s=NP_TIMEOUT,
-                        retries=NP_RETRIES,
-                        pbar=p_np,
+        # Stream in chunks by id
+        last_id: int = 0
+        with tqdm(total=total, desc="Compounds", unit="compound") as p_cmpd:
+            while True:
+                batch = (
+                    s.execute(
+                        sa.select(Compound.id, Compound.smiles, Compound.inchikey)
+                        .where(Compound.id > last_id)
+                        .order_by(Compound.id)
+                        .limit(chunk_size)
                     )
+                    .all()
                 )
-                np_enriched.update(res)
+                if not batch:
+                    break
 
-    # Enrich ChEBI roles (inchikey -> chebi ids -> roles)
-    if ENRICH_CHEBI and need_chebi_inchikeys:
-        log.info("fetching ChEBI annotations...")
-        
-        # inchikey -> chebi ids (cached)
-        all_chebis: set[str] = set()
+                last_id = int(batch[-1][0])
+                p_cmpd.update(len(batch))
+                
+                compound_ids = [int(cid) for (cid, _smi, _ik) in batch]
 
-        for ik in tqdm(list(need_chebi_inchikeys), desc="UniChem", unit="inchikey"):
-            rec = unichem_record_for_inchikey(ik)
-            all_chebis.update(chebi_ids_from_unichem(rec))
+                # Check what we already have
+                have_np = _compounds_with_scheme(s, compound_ids, "NPClassifier") if ENRICH_NP else set()
+                have_chebi = _compounds_with_scheme(s, compound_ids, "ChEBI") if ENRICH_CHEBI else set()
 
-        log.info(f"found {len(all_chebis)} unique ChEBI IDs in UniChem for the requested InChIKeys")
+                # Decide which compounds need work for what scheme
+                need_np: list[tuple[int, str]] = []
+                need_chebi: list[tuple[int, str]] = []
 
-        if all_chebis:
-            fetch_roles_for_chebi_ids(sorted(all_chebis), pause_s=CHEBI_PAUSE)
-        else:
-            log.info("no ChEBI IDs found in UniChem for the requested InChIKeys")
+                for cid, smi, ik in batch:
+                    cid = int(cid)
+                    smi = (smi or "").strip()
+                    ik = (ik or "").strip()
 
+                    if ENRICH_NP and cid not in have_np and smi:
+                        need_np.append((cid, smi))
+                    if ENRICH_CHEBI and cid not in have_chebi and ik:
+                        need_chebi.append((cid, ik))
 
-    # Second pass: write output
-    with open(args.output, "w", newline="") as out:
-        w = csv.writer(out, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
-        w.writerow(["table", "type", "inchikey", "scheme", "key", "value"])
+                log.info(f"chunk starting at Compound.id={last_id} needs NPClassifier for {len(need_np)} compounds and ChEBI for {len(need_chebi)} compounds")
 
-        for e in tqdm(entries, desc="writing", unit="entry"):
-            ik = e.inchikey
+                # NPClassifier enrich
+                np_enriched: dict[str, dict[str, Any] | None] = {}
+                if ENRICH_NP and need_np:
+                    uniq_smiles = sorted({smi for _cid, smi in need_np})
+                    log.info(f"fetching NPClassifier annotations for {len(uniq_smiles)} unique SMILES...")
 
-            # References (NPAtlas)
-            if e.name:
-                w.writerow(["reference", annotation_target, ik, database, e.npaid, e.name])
-            for syn in e.synonyms:
-                w.writerow(["reference", annotation_target, ik, database, e.npaid, syn])
+                    with tqdm(total=len(uniq_smiles), desc="NPClassifier", unit="smiles") as p_np:
+                        for chunk in _chunks(uniq_smiles, chunk_size):
+                            res = asyncio.run(
+                                np_fetch_many(
+                                    chunk,
+                                    concurrency=NP_CONCURRENCY,
+                                    rate_per_sec=NP_RATE,
+                                    timeout_s=NP_TIMEOUT,
+                                    retries=NP_RETRIES,
+                                    pbar=p_np,
+                                )
+                            )
+                            np_enriched.update(res)
 
-            # Taxonomy annotations
-            tx = e.taxonomy or {}
-            if tx:
-                domain = tx.get("type")
-                genus = tx.get("genus")
-                species = _taxonomy_species(genus, tx.get("species"))
+                # ChEBI enrich
+                if ENRICH_CHEBI and need_chebi:
+                    uniq_iks = sorted({ik for _cid, ik in need_chebi})
+                    all_chebis: set[str] = set()
 
-                if domain is not None:
-                    w.writerow(["annotation", annotation_target, ik, "taxonomy", "domain", _safe_str(domain)])
-                if genus is not None:
-                    w.writerow(["annotation", annotation_target, ik, "taxonomy", "genus", _safe_str(genus)])
-                if species is not None:
-                    w.writerow(["annotation", annotation_target, ik, "taxonomy", "species", _safe_str(species)])
+                    for ik in tqdm(uniq_iks, desc="UniChem", unit="inchikey"):
+                        rec = unichem_record_for_inchikey(ik)
+                        all_chebis.update(chebi_ids_from_unichem(rec))
 
-            # NPClassifier annotations (prefer existing, else enriched)
-            if ENRICH_NP:
-                npblob = e.npclassifier
-                if not npblob or not npblob.get("class_results") or not npblob.get("superclass_results") or not npblob.get("pathway_results"):
-                    npblob = np_enriched.get(e.smiles) or npblob
+                    if all_chebis:
+                        log.info(f"fetching ChEBI roles for {len(all_chebis)} unique ChEBI IDs...")
+                        fetch_roles_for_chebi_ids(sorted(all_chebis), pause_s=CHEBI_PAUSE)
 
-                for scheme, key, value in parse_npclassifier_rows(npblob):
-                    w.writerow(["annotation", annotation_target, ik, scheme, key, value])
+                # Build Annotation triples per compound
+                per_compound_triples: dict[int, set[tuple[str, str, str]]] = {}
 
-            # ChEBI annotations
-            if ENRICH_CHEBI:
-                for scheme, key, value in chebi_rows_for_inchikey(ik):
-                    w.writerow(["annotation", annotation_target, ik, scheme, key, value])
+                if ENRICH_NP and need_np:
+                    for cid, smi in need_np:
+                        blob = np_enriched.get(smi)
+                        rows = parse_npclassifier_rows(blob)
+                        if rows:
+                            per_compound_triples.setdefault(cid, set()).update(rows)
 
+                if ENRICH_CHEBI and need_chebi:
+                    for cid, ik in need_chebi:
+                        rows = chebi_rows_for_inchikey(ik)
+                        if rows:
+                            per_compound_triples.setdefault(cid, set()).update(rows)
 
-if __name__ == "__main__":
-    main()
+                # Write triples to database
+                all_triples: set[tuple[str, str, str]] = set()
+                for ts in per_compound_triples.values():
+                    all_triples.update(ts)
+
+                triple_to_id = _ensure_annotations(s, all_triples)
+
+                links: set[tuple[int, int]] = set()
+                for cid, ts in per_compound_triples.items():
+                    for t in ts:
+                        aid = triple_to_id.get(t)
+                        if aid is not None:
+                            links.add((cid, aid))
+
+                attempted_links = _link_compounds_to_annotations(s, links)
+                log.info(f"linked {attempted_links} annotations to compounds in this chunk")
+
+                s.commit()
+                if attempted_links:
+                    log.info(f"committed chunk up to Compound.id={last_id}")
+
+        log.info("annotation process complete")
